@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if rg -n 'path\s*=\s*"' --glob 'Cargo.toml' .; then
-  echo "cross-repository path dependencies are not allowed" >&2
+if rg -n 'path\s*=\s*"(\.\./\.\./|/)' --glob 'Cargo.toml' .; then
+  echo "cross-repository or absolute path dependencies are not allowed" >&2
   exit 1
 fi
 
