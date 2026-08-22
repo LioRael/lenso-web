@@ -1,0 +1,16 @@
+name: Release bootstrap (parked)
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  parked:
+    name: Publication is disabled
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Explain release state
+        run: |
+          echo "Publication is disabled until the post-extraction release baseline"
+          echo "and crates.io Trusted Publishers are verified."
