@@ -1,0 +1,21 @@
+{
+  "id": "lenso.web.shell@1",
+  "version": "1.0.0",
+  "portable": true,
+  "operations": [
+    {
+      "name": "render_route",
+      "interaction": "request",
+      "request_schema": "schemas/render-route-request.schema.json",
+      "response_schema": "schemas/render-route-response.schema.json",
+      "domain_error_schema": "schemas/render-route-error.schema.json"
+    },
+    {
+      "name": "read_asset",
+      "interaction": "request",
+      "request_schema": "schemas/read-asset-request.schema.json",
+      "response_schema": "schemas/read-asset-response.schema.json",
+      "domain_error_schema": "schemas/read-asset-error.schema.json"
+    }
+  ]
+}
