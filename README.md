@@ -1,22 +1,32 @@
 # Lenso Web
 
-Target-owned Web Interfaces and Modules for Lenso vNext.
+General-purpose backend Web Interfaces and Modules for Lenso vNext.
 
 This repository owns:
 
-- `lenso.ui.contribution@1`, which declares optional application UI metadata;
-- `lenso.web.shell@1`, which assembles routes, navigation, contributions, and
-  assets;
-- the Web Ingress Interface and linked Rust Module; and
-- the browser-to-App projection seam used by target-owned Browser Adapters.
+- `lenso.http.endpoint@1`, provided by backend Modules that own HTTP behavior;
+- `lenso-web-ingress`, which assembles immutable routes and owns HTTP transport;
+- credential-evidence extraction before a target-owned Auth decision; and
+- protocol response mapping after the target Module completes.
 
 It does not own portable Kernel semantics, authentication policy, business
-authorization, a global plugin registry, or a cross-App Console.
+authorization, Console/UI behavior, Web Shell, Browser Adapter, or a global
+route registry.
 
 ## Current packages
 
-- `lenso-capability-ui-contribution`
-- `lenso-capability-web-shell`
+- `lenso-capability-http-endpoint`
+- `lenso-web-ingress`
+
+`WebIngressConfig` defaults to an ephemeral loopback listener. Backend hosts
+may explicitly bind a fixed private or public address; deployment policy stays
+with the host. The first version accepts one `Authorization` credential,
+removes credential and hop-by-hop headers before dispatch, enforces body/head,
+concurrency, and deadline limits, and drains on App cancellation.
+
+Route providers are resolved through immutable `many` bindings. They describe
+their method/path table during activation, before the App Ready Gate opens;
+route collisions fail startup instead of changing behavior at runtime.
 
 ## Verify
 
@@ -26,5 +36,9 @@ cargo check --locked --workspace --all-targets
 cargo test --locked --workspace
 ```
 
-Publication remains disabled until the post-extraction baseline and crates.io
-Trusted Publishers are reviewed.
+Publication remains parked until the post-extraction baseline and crates.io
+Trusted Publishers are reviewed. The initial release must publish
+`lenso-capability-http-endpoint` before packaging `lenso-web-ingress`; workspace
+CI fully compiles and tests both crates, while its package gate dry-runs the
+leaf Capability and lists the Ingress package contents until that dependency is
+available from crates.io.

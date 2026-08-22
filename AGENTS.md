@@ -1,16 +1,23 @@
 # Agent instructions
 
-This repository owns the target-owned Web interfaces and Modules for Lenso
-vNext: UI Contribution, Web Shell, Web Ingress, and browser-to-App projection.
+This repository owns general-purpose Web backend Interfaces and Modules for
+Lenso vNext: HTTP Endpoint contributions and Web Ingress.
 
-Keep HTTP transport and browser product concerns outside the portable Kernel.
-Ingress owns listener lifecycle, protocol parsing, transport limits, and
-network middleware. Browser Adapter owns allowlisted projection from a Web
-request to Capabilities resolved by App Composition. Web Shell owns route,
-navigation, contribution, and asset assembly.
+Keep HTTP transport outside the portable Kernel. Ingress owns listener
+lifecycle, protocol parsing, route assembly, transport limits, and network
+middleware. Backend Modules provide explicitly bound HTTP Endpoint
+Capabilities and remain the final business authority.
+
+Default listeners are loopback-only, but an explicit host configuration may
+bind private or public addresses. Do not encode deployment topology as a
+framework restriction.
+
+Do not add Console, UI Contribution, Web Shell, Browser Adapter, page, asset,
+navigation, or browser plugin ownership here. Those belong to their UI product
+owner.
 
 All bindings are immutable before boot. Do not add runtime route registration,
-global Capability discovery, fallback providers, or ambient browser authority.
+global Capability discovery, fallback providers, or ambient HTTP authority.
 Auth owns authentication and target Modules own final authorization; Ingress
 only extracts protocol-neutral credential evidence.
 

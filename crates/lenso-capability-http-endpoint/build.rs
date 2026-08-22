@@ -12,5 +12,5 @@ fn main() {
         Path::new("src/generated.rs"),
         Path::new("generated/bindings.ts"),
     )
-    .unwrap_or_else(|error| panic!("Web Shell generated artifacts are stale: {error}"));
+    .unwrap_or_else(|error| panic!("HTTP Endpoint generated artifacts are stale: {error}"));
 }

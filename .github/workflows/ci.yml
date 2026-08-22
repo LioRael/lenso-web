@@ -27,11 +27,9 @@ jobs:
       - run: cargo test --locked --workspace
       - name: Check portable Capability packages
         run: |
-          cargo check --locked -p lenso-capability-ui-contribution --target wasm32-unknown-unknown
-          cargo check --locked -p lenso-capability-ui-contribution --target wasm32-wasip2
-          cargo check --locked -p lenso-capability-web-shell --target wasm32-unknown-unknown
-          cargo check --locked -p lenso-capability-web-shell --target wasm32-wasip2
-      - name: Package public crates
+          cargo check --locked -p lenso-capability-http-endpoint --target wasm32-unknown-unknown
+          cargo check --locked -p lenso-capability-http-endpoint --target wasm32-wasip2
+      - name: Package publishable leaf crate
         run: |
-          cargo package --locked -p lenso-capability-ui-contribution
-          cargo package --locked -p lenso-capability-web-shell
+          cargo package --locked -p lenso-capability-http-endpoint
+          cargo package --locked --list -p lenso-web-ingress
