@@ -1,5 +1,6 @@
 use std::{collections::HashMap, rc::Rc, time::Duration};
 
+use futures::future::{Either, select};
 use http::Method;
 use lenso_capability_http_endpoint::{
     DESCRIBE_OPERATION, DescribeRequest, EndpointDescribe, EndpointHandle, HANDLE_OPERATION,
@@ -25,11 +26,12 @@ pub(super) struct RouteTable {
     request_timeout: Duration,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum DispatchError {
     NotFound,
-    MethodNotAllowed,
+    MethodNotAllowed(Vec<Method>),
     Rejected,
+    TimedOut,
     Unavailable,
 }
 
@@ -119,18 +121,19 @@ impl RouteTable {
         request: InboundRequest,
     ) -> Result<HandleResponse, DispatchError> {
         let Some(router) = self.methods.get(&request.method) else {
-            return if self.path_exists(&request.path) {
-                Err(DispatchError::MethodNotAllowed)
-            } else {
+            let allowed = self.allowed_methods(&request.path);
+            return if allowed.is_empty() {
                 Err(DispatchError::NotFound)
+            } else {
+                Err(DispatchError::MethodNotAllowed(allowed))
             };
         };
-        let matched = match router.at(&request.path) {
-            Ok(matched) => matched,
-            Err(_) if self.path_exists(&request.path) => {
-                return Err(DispatchError::MethodNotAllowed);
+        let Ok(matched) = router.at(&request.path) else {
+            let allowed = self.allowed_methods(&request.path);
+            if allowed.is_empty() {
+                return Err(DispatchError::NotFound);
             }
-            Err(_) => return Err(DispatchError::NotFound),
+            return Err(DispatchError::MethodNotAllowed(allowed));
         };
         let path_parameters = matched
             .params
@@ -142,44 +145,70 @@ impl RouteTable {
             .collect();
         let route_id = matched.value.route_id.clone();
         let handler = matched.value.handler.clone();
+        let cancellation = CancellationToken::new();
         let context = self
             .dependencies
-            .invocation_context_after(self.request_timeout, CancellationToken::new())
+            .invocation_context_after(self.request_timeout, cancellation.clone())
             .map_err(|_| DispatchError::Unavailable)?;
-        handler
-            .invoke_with_context(
-                HANDLE_OPERATION,
-                context,
-                HandleRequest {
-                    body: request.body.into(),
-                    credential: request
-                        .credential
-                        .map(|credential| HandleRequestCredential {
-                            scheme: credential.scheme,
-                            value: credential.value,
-                        }),
-                    headers: request
-                        .headers
-                        .into_iter()
-                        .map(|header| HandleRequestHeadersItem {
-                            name: header.name,
-                            value: header.value,
-                        })
-                        .collect(),
-                    method: request.method.as_str().to_owned(),
-                    path: request.path,
-                    path_parameters,
-                    query: request.query,
-                    request_id: request.request_id,
-                    route_id,
-                },
-            )
-            .await
-            .map_err(|_| DispatchError::Unavailable)?
+        let app_cancellation = request.cancellation;
+        let disconnected = request.disconnected;
+        let cancelled = async move {
+            tokio::select! {
+                _ = disconnected => {}
+                () = app_cancellation.cancelled() => {}
+            }
+        };
+        let invocation = handler.invoke_with_context(
+            HANDLE_OPERATION,
+            context,
+            HandleRequest {
+                body: request.body.into(),
+                credential: request
+                    .credential
+                    .map(|credential| HandleRequestCredential {
+                        scheme: credential.scheme,
+                        value: credential.value,
+                    }),
+                headers: request
+                    .headers
+                    .into_iter()
+                    .map(|header| HandleRequestHeadersItem {
+                        name: header.name,
+                        value: header.value,
+                    })
+                    .collect(),
+                method: request.method.as_str().to_owned(),
+                path: request.path,
+                path_parameters,
+                query: request.query,
+                request_id: request.request_id,
+                route_id,
+            },
+        );
+        futures::pin_mut!(invocation, cancelled);
+        let outcome = match select(invocation, cancelled).await {
+            Either::Left((outcome, _)) => outcome,
+            Either::Right(((), invocation)) => {
+                cancellation.cancel();
+                invocation.await
+            }
+        };
+        outcome
+            .map_err(|error| match error {
+                RuntimeFailure::DeadlineExceeded { .. } => DispatchError::TimedOut,
+                _ => DispatchError::Unavailable,
+            })?
             .map_err(|_| DispatchError::Rejected)
     }
 
-    fn path_exists(&self, path: &str) -> bool {
-        self.methods.values().any(|router| router.at(path).is_ok())
+    fn allowed_methods(&self, path: &str) -> Vec<Method> {
+        let mut allowed = self
+            .methods
+            .iter()
+            .filter(|(_, router)| router.at(path).is_ok())
+            .map(|(method, _)| method.clone())
+            .collect::<Vec<_>>();
+        allowed.sort_unstable_by(|left, right| left.as_str().cmp(right.as_str()));
+        allowed
     }
 }
