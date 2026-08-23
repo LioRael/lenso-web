@@ -74,14 +74,20 @@ impl std::error::Error for WebIngressReplicaMismatch {}
 
 #[derive(Debug)]
 struct ReplicaSlot {
-    manifest: Option<WebIngressRouteManifest>,
+    manifest: Option<WebIngressReplicaManifest>,
     connections: Option<mpsc::Sender<std::net::TcpStream>>,
 }
 
 #[derive(Debug)]
 struct CoordinatorState {
     slots: Vec<ReplicaSlot>,
-    canonical_manifest: Option<WebIngressRouteManifest>,
+    canonical_manifest: Option<WebIngressReplicaManifest>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WebIngressReplicaManifest {
+    middleware: Vec<String>,
+    routes: WebIngressRouteManifest,
 }
 
 impl CoordinatorState {
@@ -213,8 +219,10 @@ impl WebIngressReplica {
 
     pub(crate) fn register(
         &self,
-        manifest: WebIngressRouteManifest,
+        routes: WebIngressRouteManifest,
+        middleware: Vec<String>,
     ) -> Result<ReplicaConnectionSource, lenso_kernel::RuntimeFailure> {
+        let manifest = WebIngressReplicaManifest { middleware, routes };
         let queue_capacity = self
             .coordinator
             .inner
@@ -229,9 +237,11 @@ impl WebIngressReplica {
             .lock()
             .expect("Web Ingress coordinator state is not poisoned");
         if let Some(canonical) = &state.canonical_manifest {
-            canonical
-                .ensure_equivalent(&manifest)
-                .map_err(|error| module_failure(error.to_string()))?;
+            if canonical != &manifest {
+                return Err(module_failure(
+                    "same-port Web Ingress replicas have different route or middleware manifests",
+                ));
+            }
         } else {
             state.canonical_manifest = Some(manifest.clone());
         }
@@ -389,21 +399,49 @@ mod tests {
         let first = coordinator.allocate_replica().unwrap();
         let second = coordinator.allocate_replica().unwrap();
         first
-            .register(WebIngressRouteManifest::new(vec![WebIngressRoute::new(
-                "GET",
-                "/orders",
-                "orders.list",
-            )]))
+            .register(
+                WebIngressRouteManifest::new(vec![WebIngressRoute::new(
+                    "GET",
+                    "/orders",
+                    "orders.list",
+                )]),
+                vec!["trace:v1".to_owned()],
+            )
             .unwrap();
         let error = second
-            .register(WebIngressRouteManifest::new(vec![WebIngressRoute::new(
-                "GET",
-                "/health",
-                "health.read",
-            )]))
+            .register(
+                WebIngressRouteManifest::new(vec![WebIngressRoute::new(
+                    "GET",
+                    "/health",
+                    "health.read",
+                )]),
+                vec!["trace:v1".to_owned()],
+            )
             .unwrap_err();
 
-        assert!(format!("{error:?}").contains("different route manifest"));
+        assert!(format!("{error:?}").contains("different route or middleware manifests"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn coordinator_rejects_mismatched_global_middleware_before_accepting() {
+        let coordinator = WebIngressListenerCoordinator::bind(WebIngressConfig::default(), 2)
+            .await
+            .unwrap();
+        let first = coordinator.allocate_replica().unwrap();
+        let second = coordinator.allocate_replica().unwrap();
+        let manifest = WebIngressRouteManifest::new(vec![WebIngressRoute::new(
+            "GET",
+            "/orders",
+            "orders.list",
+        )]);
+        first
+            .register(manifest.clone(), vec!["trace:sample=0.1".to_owned()])
+            .unwrap();
+        let error = second
+            .register(manifest, vec!["trace:sample=1.0".to_owned()])
+            .unwrap_err();
+
+        assert!(format!("{error:?}").contains("different route or middleware manifests"));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -422,12 +460,12 @@ mod tests {
         let mut first = coordinator
             .allocate_replica()
             .unwrap()
-            .register(manifest.clone())
+            .register(manifest.clone(), Vec::new())
             .unwrap();
         let _second = coordinator
             .allocate_replica()
             .unwrap()
-            .register(manifest)
+            .register(manifest, Vec::new())
             .unwrap();
         let weak = Arc::downgrade(&coordinator.inner);
         let (first_stream, _first_peer) = tcp_stream();

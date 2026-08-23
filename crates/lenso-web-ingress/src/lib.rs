@@ -1,6 +1,7 @@
 //! General-purpose linked Rust HTTP Ingress Module for Lenso backends.
 
 mod config;
+mod middleware;
 mod replication;
 mod routing;
 mod server;
@@ -19,6 +20,9 @@ use lenso_native_adapter::{NativeModuleFactory, NativeModuleFactoryContext, Nati
 use tokio::net::TcpListener;
 
 pub use config::WebIngressConfig;
+pub use middleware::{
+    WebIngressMiddleware, WebIngressMiddlewareOutcome, WebIngressRequest, WebIngressResponse,
+};
 use replication::WebIngressReplica;
 pub use replication::{
     WebIngressListenerCoordinator, WebIngressReplicaMismatch, WebIngressRoute,
@@ -37,6 +41,7 @@ struct WebIngressObserver {
 /// Native Module factory and observable endpoint handle for one Ingress.
 #[derive(Clone, Debug)]
 pub struct WebIngressFactory {
+    middleware: Vec<Rc<dyn WebIngressMiddleware>>,
     observer: Rc<WebIngressObserver>,
     replica: Option<WebIngressReplica>,
 }
@@ -46,6 +51,7 @@ impl WebIngressFactory {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            middleware: Vec::new(),
             observer: Rc::new(WebIngressObserver::default()),
             replica: None,
         }
@@ -55,9 +61,17 @@ impl WebIngressFactory {
     pub fn replicated(coordinator: &WebIngressListenerCoordinator) -> Result<Self, RuntimeFailure> {
         let replica = coordinator.allocate_replica()?;
         Ok(Self {
+            middleware: Vec::new(),
             observer: Rc::new(WebIngressObserver::default()),
             replica: Some(replica),
         })
+    }
+
+    /// Adds one global network middleware in deterministic declaration order.
+    #[must_use]
+    pub fn with_middleware(mut self, middleware: impl WebIngressMiddleware + 'static) -> Self {
+        self.middleware.push(Rc::new(middleware));
+        self
     }
 
     #[must_use]
@@ -102,6 +116,8 @@ impl NativeModuleFactory for WebIngressFactory {
             .map_err(|detail| RuntimeFailure::InvalidResolvedPlan {
                 detail: format!("Web Ingress configuration is invalid: {detail}"),
             })?;
+        middleware::validate(&self.middleware)
+            .map_err(|detail| RuntimeFailure::InvalidResolvedPlan { detail })?;
         if let Some(replica) = &self.replica {
             replica.validate_config(&config).map_err(|detail| {
                 RuntimeFailure::InvalidResolvedPlan {
@@ -113,6 +129,7 @@ impl NativeModuleFactory for WebIngressFactory {
             Vec::new(),
             WebIngressLifecycle {
                 config,
+                middleware: self.middleware.clone(),
                 observer: self.observer.clone(),
                 listener: Rc::new(RefCell::new(None)),
                 replica: self.replica.clone(),
@@ -123,6 +140,7 @@ impl NativeModuleFactory for WebIngressFactory {
 
 struct WebIngressLifecycle {
     config: WebIngressConfig,
+    middleware: Vec<Rc<dyn WebIngressMiddleware>>,
     observer: Rc<WebIngressObserver>,
     listener: Rc<RefCell<Option<TcpListener>>>,
     replica: Option<WebIngressReplica>,
@@ -170,6 +188,7 @@ impl ModuleLifecycle for WebIngressLifecycle {
             })));
         }
         let config = self.config.clone();
+        let middleware = self.middleware.clone();
         let dependencies = context.dependencies().clone();
         let readiness = context.readiness();
         let tasks = context.tasks().clone();
@@ -184,7 +203,10 @@ impl ModuleLifecycle for WebIngressLifecycle {
                 .replace(routes.manifest().clone());
             let source = match replica {
                 Some(replica) => {
-                    let source = replica.register(routes.manifest().clone())?;
+                    let source = replica.register(
+                        routes.manifest().clone(),
+                        middleware::identities(&middleware),
+                    )?;
                     server::ConnectionSource::Replica(source)
                 }
                 None => server::ConnectionSource::Listener(
@@ -194,7 +216,8 @@ impl ModuleLifecycle for WebIngressLifecycle {
             tasks
                 .spawn_local(Box::pin(async move {
                     readiness.wait().await;
-                    let result = server::serve(source, config, routes, cancellation).await;
+                    let result =
+                        server::serve(source, config, routes, middleware, cancellation).await;
                     server::assert_server_result(result);
                 }))
                 .map_err(|error| {

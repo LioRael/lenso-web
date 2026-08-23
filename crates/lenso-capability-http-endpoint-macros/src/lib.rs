@@ -15,7 +15,8 @@ use syn::{
 /// Supported handler attributes are `get`, `post`, `put`, `patch`, `delete`,
 /// `head`, and `options`. Each accepts a stable route ID and path. One or more
 /// `middleware` attributes may name async provider methods that run before the
-/// handler and its typed request extractors.
+/// handler and its typed request extractors. Middleware on the impl applies to
+/// every route before route-specific middleware.
 #[proc_macro_attribute]
 pub fn endpoint(arguments: TokenStream, input: TokenStream) -> TokenStream {
     if !arguments.is_empty() {
@@ -48,6 +49,7 @@ fn expand_endpoint(mut implementation: ItemImpl) -> Result<proc_macro2::TokenStr
     }
 
     let provider = implementation.self_ty.clone();
+    let provider_middlewares = take_provider_middlewares(&mut implementation.attrs)?;
     let mut routes = Vec::new();
     for item in &mut implementation.items {
         let ImplItem::Fn(method) = item else {
@@ -57,7 +59,11 @@ fn expand_endpoint(mut implementation: ItemImpl) -> Result<proc_macro2::TokenStr
         if let Some(route) = metadata.route {
             routes.push(Handler {
                 route,
-                middlewares: metadata.middlewares,
+                middlewares: provider_middlewares
+                    .iter()
+                    .cloned()
+                    .chain(metadata.middlewares)
+                    .collect(),
                 method: method.sig.ident.clone(),
                 arguments: handler_arguments(method)?,
             });
@@ -132,6 +138,28 @@ fn expand_endpoint(mut implementation: ItemImpl) -> Result<proc_macro2::TokenStr
             }
         }
     })
+}
+
+fn take_provider_middlewares(attributes: &mut Vec<Attribute>) -> Result<Vec<Ident>> {
+    let mut middlewares = Vec::new();
+    let mut retained = Vec::with_capacity(attributes.len());
+    for attribute in attributes.drain(..) {
+        if attribute.path().is_ident("middleware") {
+            let arguments =
+                attribute.parse_args_with(Punctuated::<Ident, Token![,]>::parse_terminated)?;
+            if arguments.is_empty() {
+                return Err(Error::new_spanned(
+                    attribute,
+                    "middleware requires at least one provider method",
+                ));
+            }
+            middlewares.extend(arguments);
+        } else {
+            retained.push(attribute);
+        }
+    }
+    *attributes = retained;
+    Ok(middlewares)
 }
 
 fn take_handler_metadata(attributes: &mut Vec<Attribute>) -> Result<HandlerMetadata> {
@@ -400,6 +428,31 @@ mod tests {
         assert!(expanded.contains("into_result"));
         assert!(expanded.contains("FromRequest"));
         assert!(expanded.contains("provider . read (context , __lenso_extracted_2)"));
+        assert!(!expanded.contains("# [middleware"));
+    }
+
+    #[test]
+    fn applies_provider_middleware_before_route_middleware() {
+        let expanded = expand_endpoint(parse_quote! {
+            #[middleware(trace_all)]
+            impl OrdersHttp {
+                #[middleware(authorize_read)]
+                #[get("orders.read", "/orders/{order_id}")]
+                async fn read(&self) {}
+
+                #[get("orders.list", "/orders")]
+                async fn list(&self) {}
+            }
+        })
+        .unwrap()
+        .to_string();
+
+        assert_eq!(expanded.matches("provider . trace_all").count(), 2);
+        assert_eq!(expanded.matches("provider . authorize_read").count(), 1);
+        assert!(
+            expanded.find("provider . trace_all").unwrap()
+                < expanded.find("provider . authorize_read").unwrap()
+        );
         assert!(!expanded.contains("# [middleware"));
     }
 

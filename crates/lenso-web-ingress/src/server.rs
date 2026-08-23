@@ -31,8 +31,8 @@ use tokio::{
 };
 
 use crate::{
-    WebIngressConfig, replication::ReplicaConnectionSource, routing::DispatchError,
-    routing::RouteTable,
+    WebIngressConfig, WebIngressMiddleware, WebIngressRequest, WebIngressResponse, middleware,
+    replication::ReplicaConnectionSource, routing::DispatchError, routing::RouteTable,
 };
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
@@ -72,6 +72,7 @@ enum RequestRejection {
 struct IngressService {
     cancellation: CancellationToken,
     config: WebIngressConfig,
+    middleware: Vec<Rc<dyn WebIngressMiddleware>>,
     routes: Rc<RouteTable>,
     concurrency: Arc<Semaphore>,
     next_request_id: RequestIdSequence,
@@ -152,6 +153,31 @@ impl IngressResponse {
         *response.headers_mut() = self.headers;
         response
     }
+
+    fn into_middleware_response(self) -> WebIngressResponse {
+        let mut response = Response::new(self.body);
+        *response.status_mut() = self.status;
+        *response.headers_mut() = self.headers;
+        response
+    }
+
+    fn from_middleware_response(response: WebIngressResponse) -> Self {
+        let (parts, body) = response.into_parts();
+        let mut headers = parts.headers;
+        let ingress_owned = headers
+            .keys()
+            .filter(|name| is_ingress_owned_response_header(name))
+            .cloned()
+            .collect::<Vec<_>>();
+        for name in ingress_owned {
+            headers.remove(name);
+        }
+        Self {
+            status: parts.status,
+            headers,
+            body,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -208,6 +234,7 @@ pub(super) async fn serve(
     mut source: ConnectionSource,
     config: WebIngressConfig,
     routes: std::rc::Rc<RouteTable>,
+    middleware: Vec<Rc<dyn WebIngressMiddleware>>,
     cancellation: CancellationToken,
 ) -> std::io::Result<()> {
     let next_request_id = source.request_ids();
@@ -215,6 +242,7 @@ pub(super) async fn serve(
         cancellation: cancellation.clone(),
         concurrency: source.concurrency(config.max_concurrent_requests()),
         config,
+        middleware,
         routes,
         next_request_id,
     };
@@ -347,16 +375,112 @@ impl IngressService {
             Ok(request) => request,
             Err(RequestRejection::BadRequest) => return bad_request(),
         };
-        let response = match AssertUnwindSafe(self.routes.dispatch(request))
+        let (request, control) = middleware_request(request, parts.version);
+        let routes = self.routes.clone();
+        let response =
+            AssertUnwindSafe(middleware::run(&self.middleware, request, move |request| {
+                let request = restore_inbound_request(request, control);
+                async move {
+                    match request {
+                        Ok(request) => dispatch_response(routes.dispatch(request).await)
+                            .into_middleware_response(),
+                        Err(RequestRejection::BadRequest) => {
+                            bad_request().into_middleware_response()
+                        }
+                    }
+                }
+            }))
             .catch_unwind()
             .await
-        {
-            Ok(result) => dispatch_response(result),
-            Err(_) => unavailable(),
-        };
+            .ok()
+            .and_then(Result::ok)
+            .map_or_else(unavailable, IngressResponse::from_middleware_response);
         drop(cancel_on_drop);
         response
     }
+}
+
+struct InboundRequestControl {
+    cancellation: CancellationToken,
+    credential: Option<CredentialEvidence>,
+    disconnected: oneshot::Receiver<()>,
+    request_id: String,
+}
+
+fn middleware_request(
+    request: InboundRequest,
+    version: Version,
+) -> (WebIngressRequest, InboundRequestControl) {
+    let InboundRequest {
+        body,
+        cancellation,
+        credential,
+        disconnected,
+        headers,
+        method,
+        path,
+        query,
+        request_id,
+    } = request;
+    let uri = query.map_or_else(|| path.clone(), |query| format!("{path}?{query}"));
+    let mut middleware_request = Request::builder()
+        .method(method)
+        .uri(uri)
+        .version(version)
+        .body(body)
+        .expect("an accepted HTTP request remains valid");
+    for header in headers {
+        let name = HeaderName::from_bytes(header.name.as_bytes())
+            .expect("Ingress produced a valid header name");
+        let value =
+            HeaderValue::from_str(&header.value).expect("Ingress produced a valid header value");
+        middleware_request.headers_mut().append(name, value);
+    }
+    middleware_request.headers_mut().insert(
+        REQUEST_ID_HEADER.clone(),
+        HeaderValue::from_str(&request_id).expect("Ingress request IDs are valid headers"),
+    );
+    (
+        middleware_request,
+        InboundRequestControl {
+            cancellation,
+            credential,
+            disconnected,
+            request_id,
+        },
+    )
+}
+
+fn restore_inbound_request(
+    request: &WebIngressRequest,
+    control: InboundRequestControl,
+) -> Result<InboundRequest, RequestRejection> {
+    let connection_owned = connection_owned_headers(request.headers())?;
+    let headers = request
+        .headers()
+        .iter()
+        .filter(|(name, _)| !is_filtered_request_header(name) && !connection_owned.contains(*name))
+        .map(|(name, value)| {
+            value
+                .to_str()
+                .map(|value| InboundHeader {
+                    name: name.as_str().to_owned(),
+                    value: value.to_owned(),
+                })
+                .map_err(|_| RequestRejection::BadRequest)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(InboundRequest {
+        body: request.body().clone(),
+        cancellation: control.cancellation,
+        credential: control.credential,
+        disconnected: control.disconnected,
+        headers,
+        method: normalized_method(request.method()),
+        path: request.uri().path().to_owned(),
+        query: request.uri().query().map(ToOwned::to_owned),
+        request_id: control.request_id,
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

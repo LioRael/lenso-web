@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use futures::future::pending;
+use futures::future::{LocalBoxFuture, pending};
 use http_body_util::{BodyExt as _, Full};
 use hyper::{Request, Version, client::conn::http2};
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -30,7 +30,9 @@ use lenso_native_adapter::{
 };
 use lenso_runner::TokioDriver;
 use lenso_web_ingress::{
-    PACKAGE_ID, PACKAGE_VERSION, WebIngressConfig, WebIngressFactory, WebIngressListenerCoordinator,
+    PACKAGE_ID, PACKAGE_VERSION, WebIngressConfig, WebIngressFactory,
+    WebIngressListenerCoordinator, WebIngressMiddleware, WebIngressMiddlewareOutcome,
+    WebIngressRequest, WebIngressResponse,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -41,6 +43,152 @@ use tokio::{
 const ORDERS_PACKAGE_ID: &str = "fixture.orders-http";
 const STATUS_PACKAGE_ID: &str = "fixture.status-http";
 const SDK_PACKAGE_ID: &str = "fixture.sdk-orders-http";
+
+#[derive(Clone, Debug, Default)]
+struct GlobalMiddleware {
+    events: Rc<RefCell<Vec<String>>>,
+}
+
+impl WebIngressMiddleware for GlobalMiddleware {
+    fn identity(&self) -> &'static str {
+        "fixture.global:v1"
+    }
+
+    fn before_request<'a>(
+        &'a self,
+        request: &'a mut WebIngressRequest,
+    ) -> LocalBoxFuture<'a, Result<WebIngressMiddlewareOutcome, RuntimeFailure>> {
+        self.events
+            .borrow_mut()
+            .push(format!("before:{}", request.uri().path()));
+        request
+            .headers_mut()
+            .insert("x-global-before", http::HeaderValue::from_static("present"));
+        request.headers_mut().insert(
+            http::header::AUTHORIZATION,
+            http::HeaderValue::from_static("Bearer middleware-must-not-smuggle-this"),
+        );
+        request.headers_mut().insert(
+            "x-request-id",
+            http::HeaderValue::from_static("middleware-controlled"),
+        );
+        if request.uri().path() == "/middleware-error" {
+            return Box::pin(futures::future::ready(Err(RuntimeFailure::ModuleFailure {
+                detail: "fixture middleware failed".to_owned(),
+            })));
+        }
+        let outcome = if request.uri().path() == "/blocked" {
+            let mut response = WebIngressResponse::new(bytes::Bytes::from_static(b"blocked"));
+            *response.status_mut() = http::StatusCode::IM_A_TEAPOT;
+            WebIngressMiddlewareOutcome::Respond(response)
+        } else {
+            WebIngressMiddlewareOutcome::Continue
+        };
+        Box::pin(futures::future::ready(Ok(outcome)))
+    }
+
+    fn after_response<'a>(
+        &'a self,
+        request: &'a WebIngressRequest,
+        response: &'a mut WebIngressResponse,
+    ) -> LocalBoxFuture<'a, Result<(), RuntimeFailure>> {
+        self.events
+            .borrow_mut()
+            .push(format!("after:{}", request.uri().path()));
+        response
+            .headers_mut()
+            .insert("x-global-after", http::HeaderValue::from_static("present"));
+        response.headers_mut().insert(
+            "x-request-id",
+            http::HeaderValue::from_static("middleware-controlled"),
+        );
+        response.headers_mut().insert(
+            "x-content-type-options",
+            http::HeaderValue::from_static("middleware-controlled"),
+        );
+        Box::pin(futures::future::ready(Ok(())))
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn global_middleware_wraps_routes_and_can_short_circuit() {
+    LocalSet::new()
+        .run_until(async {
+            let endpoint = FixtureEndpointFactory::new(
+                ORDERS_PACKAGE_ID,
+                [("orders.read", "GET", "/orders/{order_id}")],
+            );
+            let middleware = GlobalMiddleware::default();
+            let events = middleware.events.clone();
+            let ingress = WebIngressFactory::default().with_middleware(middleware);
+            let app = start(
+                project(&[ProviderPlan::new("orders-http", ORDERS_PACKAGE_ID)]),
+                &ingress,
+                [endpoint.clone()],
+            )
+            .await
+            .unwrap();
+            let address = ingress.local_address().unwrap();
+
+            let accepted = request(address, "GET", "/orders/42", &[], "").await;
+            assert_eq!(accepted.status, 200);
+            assert_eq!(
+                accepted.headers.get("x-global-after").map(String::as_str),
+                Some("present")
+            );
+            assert_ne!(
+                accepted.headers.get("x-request-id").map(String::as_str),
+                Some("middleware-controlled")
+            );
+            assert_eq!(
+                accepted
+                    .headers
+                    .get("x-content-type-options")
+                    .map(String::as_str),
+                Some("nosniff")
+            );
+            let observed = endpoint.observed().unwrap();
+            assert!(
+                observed.headers.iter().any(|header| {
+                    header.name == "x-global-before" && header.value == "present"
+                })
+            );
+            assert!(
+                observed.headers.iter().all(|header| {
+                    header.name != "authorization" && header.name != "x-request-id"
+                }),
+                "middleware must not reintroduce Ingress-owned evidence"
+            );
+            assert_ne!(observed.request_id, "middleware-controlled");
+
+            let blocked = request(address, "GET", "/blocked", &[], "").await;
+            assert_eq!(blocked.status, 418);
+            assert_eq!(blocked.body, "blocked");
+            assert_eq!(
+                blocked.headers.get("x-global-after").map(String::as_str),
+                Some("present")
+            );
+
+            let failed = request(address, "GET", "/middleware-error", &[], "").await;
+            assert_error(&failed, 503, "endpoint_unavailable");
+            assert_eq!(
+                *events.borrow(),
+                [
+                    "before:/orders/42",
+                    "after:/orders/42",
+                    "before:/blocked",
+                    "after:/blocked",
+                    "before:/middleware-error",
+                ]
+            );
+
+            assert_eq!(
+                app.shutdown(Duration::from_secs(1)).await,
+                ShutdownOutcome::Clean
+            );
+        })
+        .await;
+}
 
 #[tokio::test(flavor = "current_thread")]
 async fn equivalent_replicas_share_one_listener_and_receive_connections() {
