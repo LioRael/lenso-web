@@ -33,12 +33,14 @@ the Ingress factory before resource preparation. App Composition owns the
 configured address and limits; the native factory owns only linked execution
 and an observable bound address for host integration and tests.
 
-The optional `http_endpoint!` authoring macro implements that same Capability
-from one static route table. It generates both the activation description and
-handler dispatch, while leaving protocol decoding, authentication orchestration,
-business Capability calls, and HTTP response choices inside the owning Endpoint
-Module. Dynamic providers may continue to implement `EndpointProvider`
-directly; the macro creates no runtime route-registration seam.
+The optional Endpoint authoring SDK implements that same Capability from
+compile-time route declarations. `#[endpoint]` collects HTTP method attributes
+from handlers, while `http_endpoint!` retains the explicit static-table form.
+Both generate the activation description and handler dispatch while leaving
+protocol decoding, authentication orchestration, business Capability calls,
+and HTTP response choices inside the owning Endpoint Module. Dynamic providers
+may continue to implement `EndpointProvider` directly; neither macro creates a
+runtime route-registration seam.
 
 Each Egress Instance is a separate outbound authority boundary. App
 Composition binds a consumer to one provider whose immutable configuration

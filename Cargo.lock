@@ -954,11 +954,21 @@ name = "lenso-capability-http-endpoint"
 version = "0.2.0"
 dependencies = [
  "futures",
+ "lenso-capability-http-endpoint-macros",
  "lenso-contract-codegen",
  "lenso-contract-runtime",
  "lenso-kernel",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "lenso-capability-http-endpoint-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

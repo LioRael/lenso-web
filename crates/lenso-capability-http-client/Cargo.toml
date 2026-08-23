@@ -1,7 +1,7 @@
 [package]
 name = "lenso-capability-http-client"
 version = "0.2.0"
-description = "Portable outbound HTTP Client Capability contract for Lenso vNext Modules."
+description = "Portable outbound HTTP Client Capability contract for Lenso Modules."
 edition.workspace = true
 license.workspace = true
 publish.workspace = true

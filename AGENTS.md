@@ -1,7 +1,7 @@
 # Agent instructions
 
 This repository owns general-purpose Web backend Interfaces and Modules for
-Lenso vNext: inbound HTTP Endpoint/Web Ingress and outbound HTTP Client/Egress.
+Lenso: inbound HTTP Endpoint/Web Ingress and outbound HTTP Client/Egress.
 
 Keep HTTP transport outside the portable Kernel. Ingress owns listener
 lifecycle, protocol parsing, route assembly, transport limits, and network
