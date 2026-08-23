@@ -1,5 +1,6 @@
 //! Generated bindings for backend-owned HTTP Endpoint providers.
 
+#[allow(unknown_lints)]
 #[allow(
     clippy::chunks_exact_to_as_chunks,
     clippy::manual_div_ceil,
