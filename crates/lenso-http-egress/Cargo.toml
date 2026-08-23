@@ -1,0 +1,29 @@
+[package]
+name = "lenso-http-egress"
+version = "0.1.0"
+description = "Policy-bounded linked Rust HTTP Egress Module for Lenso vNext backends."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+base64.workspace = true
+futures.workspace = true
+lenso-capability-http-client = { version = "0.1.0", path = "../lenso-capability-http-client" }
+lenso-kernel = "0.1.1"
+lenso-native-adapter = "0.1.1"
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+lenso-app-plan = "0.1.0"
+lenso-runner = "0.1.1"
+tokio = { workspace = true, features = ["macros", "time"] }
+
+[lints]
+workspace = true

@@ -10,3 +10,8 @@ if rg -n 'lenso-(app-plan|kernel|runtime-conformance).*path' --glob 'Cargo.toml'
   echo "portable core must be consumed through released packages" >&2
   exit 1
 fi
+
+if rg -n '^(axum|reqwest|tokio)\s*=' crates/lenso-capability-http-*/Cargo.toml; then
+  echo "portable HTTP Capability crates must not own native transport dependencies" >&2
+  exit 1
+fi

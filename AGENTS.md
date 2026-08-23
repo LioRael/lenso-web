@@ -1,12 +1,19 @@
 # Agent instructions
 
 This repository owns general-purpose Web backend Interfaces and Modules for
-Lenso vNext: HTTP Endpoint contributions and Web Ingress.
+Lenso vNext: inbound HTTP Endpoint/Web Ingress and outbound HTTP Client/Egress.
 
 Keep HTTP transport outside the portable Kernel. Ingress owns listener
 lifecycle, protocol parsing, route assembly, transport limits, and network
 middleware. Backend Modules provide explicitly bound HTTP Endpoint
 Capabilities and remain the final business authority.
+
+Egress owns outbound transport, exact-origin authority, timeouts, redirects,
+proxy behavior, retries, and transfer limits. An HTTP Client binding grants
+authority only to the configured exact origins. Do not add an allow-all
+default, implicit system proxy, automatic redirects, automatic retries, cookie
+storage, runtime allowlist mutation, or secret values to immutable Egress
+configuration.
 
 Default listeners are loopback-only, but an explicit host configuration may
 bind private or public addresses. Do not encode deployment topology as a
