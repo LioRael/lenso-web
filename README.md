@@ -106,27 +106,33 @@ The supported method attributes are `get`, `post`, `put`, `patch`, `delete`,
 that prefers one explicit route table.
 
 Attribute-authored handlers may use `Path<T>`, `Query<T>`, `Json<T>`, and
-`RequestId` extractors. Route-owned middleware runs before extraction:
+`RequestId` extractors. Middleware on the `impl` applies to every route;
+route-owned middleware follows it, before extraction:
 
 ```rust,ignore
-#[middleware(trace_request)]
-#[get("orders.read", "/orders/{order_id}")]
-async fn read(
-    &self,
-    context: InvocationContext,
-    Path(path): Path<OrderPath>,
-) -> Result<HandleResponse, EndpointHandleInvocationError> {
-    self.read_authenticated(context, path.order_id).await
+#[endpoint]
+#[middleware(trace_all)]
+impl OrdersHttp {
+    #[middleware(trace_request)]
+    #[get("orders.read", "/orders/{order_id}")]
+    async fn read(
+        &self,
+        context: InvocationContext,
+        Path(path): Path<OrderPath>,
+    ) -> Result<HandleResponse, EndpointHandleInvocationError> {
+        self.read_authenticated(context, path.order_id).await
+    }
 }
 ```
 
 The named async middleware method receives `InvocationContext` and
 `HandleRequest`, then returns `MiddlewareOutcome::next` with an enriched
 context/request or `MiddlewareOutcome::response` to short-circuit. Multiple
-middleware declarations run in order. Custom protocol-local extractors can
-implement `FromRequest<Provider>`; extractors are asynchronous, can access the
-provider's activation-time clients, and can enrich the context seen by later
-extractors and the handler.
+provider-wide and route middleware declarations run in order, with
+provider-wide middleware first. Custom protocol-local extractors can implement
+`FromRequest<Provider>`; extractors are asynchronous, can access the provider's
+activation-time clients, and can enrich the context seen by later extractors
+and the handler.
 
 The macro rejects empty or malformed routes, duplicate route identifiers, and
 duplicate exact method/path pairs during compilation. Web Ingress still owns
@@ -189,16 +195,75 @@ return `502`, unavailable Endpoint execution returns `503`, and Endpoint
 deadlines return `504`. Every Ingress-produced response carries a generated
 `x-request-id` and `x-content-type-options: nosniff`.
 
+Hosts can install transport-wide policy on one concrete Ingress factory.
+Global Ingress middleware runs after request-head/body limits, request-ID
+replacement, hop-by-hop filtering, and credential isolation. Request steps run
+in declaration order before route matching; response steps run in reverse
+order, including for short-circuited responses:
+
+```rust,ignore
+use futures::future::LocalBoxFuture;
+use lenso_kernel::RuntimeFailure;
+use lenso_web_ingress::{
+    WebIngressFactory, WebIngressMiddleware, WebIngressMiddlewareOutcome,
+    WebIngressRequest, WebIngressResponse,
+};
+
+#[derive(Debug)]
+struct AccessLog;
+
+impl WebIngressMiddleware for AccessLog {
+    fn identity(&self) -> &'static str {
+        // Include immutable settings so replicated lanes can compare policy.
+        "access-log:json:v1"
+    }
+
+    fn before_request<'a>(
+        &'a self,
+        request: &'a mut WebIngressRequest,
+    ) -> LocalBoxFuture<'a, Result<WebIngressMiddlewareOutcome, RuntimeFailure>> {
+        tracing::info!(method = %request.method(), path = %request.uri().path());
+        Box::pin(async { Ok(WebIngressMiddlewareOutcome::Continue) })
+    }
+
+    fn after_response<'a>(
+        &'a self,
+        _request: &'a WebIngressRequest,
+        response: &'a mut WebIngressResponse,
+    ) -> LocalBoxFuture<'a, Result<(), RuntimeFailure>> {
+        tracing::info!(status = response.status().as_u16());
+        Box::pin(async { Ok(()) })
+    }
+}
+
+let ingress = WebIngressFactory::new().with_middleware(AccessLog);
+```
+
+This seam is suitable for transport-wide access logging, CORS, compression,
+and coarse network admission policy. Middleware can mutate the normalized
+method, URI, headers, and body, or return an intentional response. It cannot
+override Ingress-owned response headers, reintroduce credential or hop-by-hop
+headers to an Endpoint, bypass immutable transfer limits, or access Hyper's
+connection body. Middleware failures map to `503`.
+
+Authentication remains Endpoint orchestration: use `UserActor` or `AdminActor`
+extractors backed by the Auth Module so the target Module can still make the
+final authorization decision. Do not turn global Ingress middleware into a
+business identity or permission registry.
+
 Hosts that replicate one App across Runner lanes can bind once and create one
 Ingress factory per lane through `WebIngressListenerCoordinator`. The
 coordinator opens the Ready Gate only after every replica publishes the same
-canonical route manifest, distributes accepted sockets round-robin, and keeps
-the concurrency semaphore global to the listener group:
+canonical route manifest and ordered middleware identity sequence, distributes
+accepted sockets round-robin, and keeps the concurrency semaphore global to the
+listener group. Every identity must include its immutable configuration:
 
 ```rust,no_run
 let coordinator = WebIngressListenerCoordinator::bind(config, lane_count).await?;
 let factories = (0..lane_count)
-    .map(|_| WebIngressFactory::replicated(&coordinator))
+    .map(|_| WebIngressFactory::replicated(&coordinator).map(|factory| {
+        factory.with_middleware(AccessLog)
+    }))
     .collect::<Result<Vec<_>, _>>()?;
 ```
 

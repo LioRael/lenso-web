@@ -15,7 +15,18 @@ struct OrdersHttp {
 }
 
 #[endpoint]
+#[middleware(trace_all)]
 impl OrdersHttp {
+    async fn trace_all(
+        &self,
+        context: InvocationContext,
+        request: HandleRequest,
+    ) -> Result<MiddlewareOutcome, EndpointHandleInvocationError> {
+        futures::future::ready(()).await;
+        self.handled.borrow_mut().push("global");
+        Ok(MiddlewareOutcome::next(context, request))
+    }
+
     async fn observe(
         &self,
         context: InvocationContext,
@@ -102,7 +113,7 @@ fn handler_attributes_generate_description_and_dispatch() {
     .unwrap();
     assert_eq!(response.status, 200);
     assert_eq!(response.body.as_slice(), br#"{"id":"order-42"}"#);
-    assert_eq!(*endpoint.handled.borrow(), ["middleware", "read"]);
+    assert_eq!(*endpoint.handled.borrow(), ["global", "middleware", "read"]);
 }
 
 #[test]
@@ -130,7 +141,7 @@ fn json_extractor_rejects_invalid_content_type_before_the_handler() {
         .unwrap()
         .unwrap();
     assert_eq!(rejected.status, 415);
-    assert!(endpoint.handled.borrow().is_empty());
+    assert_eq!(*endpoint.handled.borrow(), ["global"]);
 
     let mut accepted = request("orders.create");
     accepted.body = br#"{"id":"order-42"}"#.as_slice().into();
@@ -143,6 +154,7 @@ fn json_extractor_rejects_invalid_content_type_before_the_handler() {
         .unwrap();
     assert_eq!(response.status, 201);
     assert_eq!(response.body.as_slice(), br#"{"id":"order-42"}"#);
+    assert_eq!(*endpoint.handled.borrow(), ["global", "global", "create"]);
 }
 
 fn request(route_id: &str) -> HandleRequest {
