@@ -19,7 +19,7 @@ lenso-capability-http-endpoint = { version = "0.1.0", path = "../lenso-capabilit
 lenso-kernel = "0.1.3"
 lenso-native-adapter = "0.1.1"
 matchit = "0.8"
-tokio.workspace = true
+tokio = { workspace = true, features = ["macros"] }
 
 [dev-dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
