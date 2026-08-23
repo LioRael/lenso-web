@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, sync::Arc};
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use bytes::{Bytes, BytesMut};
 use futures::{FutureExt as _, future::Either};
 use lenso_capability_http_client::{
     ClientInvocationError, ClientProvider, SendError, SendRequest, SendResponse,
@@ -90,18 +90,7 @@ impl HttpEgressProvider {
                 SendError::DestinationNotAllowed,
             ));
         }
-        let encoded_limit = self
-            .config
-            .max_request_body_bytes()
-            .saturating_mul(4)
-            .div_ceil(3)
-            .saturating_add(4);
-        if request.body.len() > encoded_limit {
-            return Err(ClientInvocationError::Domain(SendError::RequestTooLarge));
-        }
-        let body = STANDARD
-            .decode(request.body)
-            .map_err(|_| invalid_request())?;
+        let body = request.body.into_shared();
         if body.len() > self.config.max_request_body_bytes() {
             return Err(ClientInvocationError::Domain(SendError::RequestTooLarge));
         }
@@ -127,19 +116,9 @@ impl HttpEgressProvider {
         {
             return Err(ClientInvocationError::Domain(SendError::ResponseTooLarge));
         }
-        let mut body = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|error| classify_transport_error(&error))?
-        {
-            if body.len().saturating_add(chunk.len()) > self.config.max_response_body_bytes() {
-                return Err(ClientInvocationError::Domain(SendError::ResponseTooLarge));
-            }
-            body.extend_from_slice(&chunk);
-        }
+        let body = read_bounded_body(&mut response, self.config.max_response_body_bytes()).await?;
         Ok(SendResponse {
-            body: STANDARD.encode(body),
+            body: body.into(),
             headers,
             status,
         })
@@ -186,7 +165,48 @@ struct PreparedRequest {
     method: Method,
     url: Url,
     headers: HeaderMap,
-    body: Vec<u8>,
+    body: Bytes,
+}
+
+async fn read_bounded_body(
+    response: &mut reqwest::Response,
+    limit: usize,
+) -> Result<Bytes, ClientInvocationError> {
+    let Some(first) = response
+        .chunk()
+        .await
+        .map_err(|error| classify_transport_error(&error))?
+    else {
+        return Ok(Bytes::new());
+    };
+    if first.len() > limit {
+        return Err(ClientInvocationError::Domain(SendError::ResponseTooLarge));
+    }
+    let Some(second) = response
+        .chunk()
+        .await
+        .map_err(|error| classify_transport_error(&error))?
+    else {
+        return Ok(first);
+    };
+    let total = first.len().saturating_add(second.len());
+    if total > limit {
+        return Err(ClientInvocationError::Domain(SendError::ResponseTooLarge));
+    }
+    let mut body = BytesMut::with_capacity(total);
+    body.extend_from_slice(&first);
+    body.extend_from_slice(&second);
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| classify_transport_error(&error))?
+    {
+        if body.len().saturating_add(chunk.len()) > limit {
+            return Err(ClientInvocationError::Domain(SendError::ResponseTooLarge));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body.freeze())
 }
 
 fn parse_request_headers(
@@ -319,7 +339,7 @@ mod tests {
             .unwrap();
         let provider = HttpEgressProvider::new(client, config, allowed_origins);
         let request = || SendRequest {
-            body: STANDARD.encode([]),
+            body: Vec::new().into(),
             headers: Vec::new(),
             method: "GET".to_owned(),
             url: format!("http://{address}/slow"),

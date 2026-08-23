@@ -906,13 +906,13 @@ dependencies = [
 
 [[package]]
 name = "lenso-authoring"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7fb526d320c0212cdb2afd7704d26471f4bdef66f10e9ee7d64d7ba9b4418295"
+checksum = "2c7ee1f21465d0672bc6fe40ea9a29e21ae2a76e87e5d1ffb1ef7c3915dc3694"
 dependencies = [
  "lenso-app-plan",
  "lenso-bun-adapter",
- "lenso-contract-codegen 0.2.0",
+ "lenso-contract-codegen",
  "lenso-kernel",
  "lenso-runner",
  "serde",
@@ -942,7 +942,8 @@ name = "lenso-capability-http-client"
 version = "0.1.0"
 dependencies = [
  "futures",
- "lenso-contract-codegen 0.1.0",
+ "lenso-contract-codegen",
+ "lenso-contract-runtime",
  "lenso-kernel",
  "serde",
  "serde_json",
@@ -953,7 +954,8 @@ name = "lenso-capability-http-endpoint"
 version = "0.1.0"
 dependencies = [
  "futures",
- "lenso-contract-codegen 0.2.0",
+ "lenso-contract-codegen",
+ "lenso-contract-runtime",
  "lenso-kernel",
  "serde",
  "serde_json",
@@ -961,21 +963,23 @@ dependencies = [
 
 [[package]]
 name = "lenso-contract-codegen"
-version = "0.1.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71aa6b7c5c4dc62b2883b10296e1b47bcff437d3cc655a4c8d7d4f21ff9acf8e"
+checksum = "f19b2799be70af76ec63c50ebed41cf1e4bc47ebfcc4842729cf0977583a52df"
 dependencies = [
  "semver",
  "serde_json",
 ]
 
 [[package]]
-name = "lenso-contract-codegen"
-version = "0.2.0"
+name = "lenso-contract-runtime"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0588acf96c6093afea0ba605e213a90242a6563489293c0b9640e5be44512fb"
+checksum = "bb27de491e87d8bce223fade970fedc8348326e395640ee3d260b7a569b9e02d"
 dependencies = [
- "semver",
+ "base64",
+ "bytes",
+ "serde",
  "serde_json",
 ]
 
@@ -984,7 +988,7 @@ name = "lenso-http-egress"
 version = "0.1.0"
 dependencies = [
  "axum",
- "base64",
+ "bytes",
  "futures",
  "lenso-app-plan",
  "lenso-capability-http-client",
@@ -999,9 +1003,9 @@ dependencies = [
 
 [[package]]
 name = "lenso-kernel"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f31faf46ab8af5434711faabce84a1bd9bddd9c97ac778e138518b35d8023d12"
+checksum = "657bb4f55cc0963cc755fc5dff98887881b2cf2418848d6e20b045e7a1b7710b"
 dependencies = [
  "futures",
  "lenso-app-plan",
@@ -1044,6 +1048,7 @@ dependencies = [
  "lenso-runner",
  "matchit",
  "serde_json",
+ "stats_alloc",
  "tokio",
  "tower",
  "tower-http",
@@ -1072,9 +1077,9 @@ dependencies = [
 
 [[package]]
 name = "log"
-version = "0.4.33"
+version = "0.4.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
+checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "lru-slab"
@@ -1752,6 +1757,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
+name = "stats_alloc"
+version = "0.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c0e04424e733e69714ca1bbb9204c1a57f09f5493439520f9f68c132ad25eec"
+
+[[package]]
 name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2052,9 +2063,9 @@ checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 
 [[package]]
 name = "uuid"
-version = "1.24.1"
+version = "1.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2cefc03fd367c0c6d4305de1b312cf00248c4114f4a0418ce6a6af769e3b0bd9"
+checksum = "f053576934f05a761a402421fbbe3d425d9366f75f978806a037b3ca481abecc"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",

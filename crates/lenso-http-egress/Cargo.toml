@@ -9,10 +9,10 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-base64.workspace = true
+bytes.workspace = true
 futures.workspace = true
 lenso-capability-http-client = { version = "0.1.0", path = "../lenso-capability-http-client" }
-lenso-kernel = "0.1.1"
+lenso-kernel = "0.1.2"
 lenso-native-adapter = "0.1.1"
 reqwest.workspace = true
 serde.workspace = true

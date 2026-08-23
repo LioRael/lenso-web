@@ -113,7 +113,7 @@ fn request_id_header_value(mut value: u64) -> HeaderValue {
 struct IngressResponse {
     status: StatusCode,
     headers: HeaderMap,
-    body: Vec<u8>,
+    body: Bytes,
 }
 
 impl IngressResponse {
@@ -126,7 +126,7 @@ impl IngressResponse {
         Self {
             status,
             headers,
-            body: body.as_bytes().to_vec(),
+            body: Bytes::from_static(body.as_bytes()),
         }
     }
 }
@@ -224,8 +224,9 @@ async fn dispatch_requests(
             call = receiver.recv(), if accepting => {
                 match call {
                     Some(call) => {
-                        let routes = routes.clone();
-                        calls.push(AssertUnwindSafe(dispatch_request(call, routes)).catch_unwind());
+                        calls.push(
+                            AssertUnwindSafe(dispatch_request(call, routes.as_ref())).catch_unwind(),
+                        );
                     }
                     None => accepting = false,
                 }
@@ -236,7 +237,7 @@ async fn dispatch_requests(
     }
 }
 
-async fn dispatch_request(call: IngressCall, routes: std::rc::Rc<RouteTable>) {
+async fn dispatch_request(call: IngressCall, routes: &RouteTable) {
     let response = match routes.dispatch(call.request).await {
         Ok(response) => from_endpoint(response),
         Err(DispatchError::NotFound) => {
@@ -352,7 +353,7 @@ fn from_endpoint(response: HandleResponse) -> IngressResponse {
     else {
         return invalid_endpoint_response();
     };
-    let body = response.body.into_vec();
+    let body = response.body.into_shared();
     let mut headers = HeaderMap::new();
     for header in response.headers {
         let Ok(name) = HeaderName::from_bytes(header.name.as_bytes()) else {
