@@ -1052,6 +1052,7 @@ dependencies = [
  "lenso-native-adapter",
  "lenso-runner",
  "matchit",
+ "serde",
  "serde_json",
  "stats_alloc",
  "tokio",

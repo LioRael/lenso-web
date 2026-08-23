@@ -31,7 +31,7 @@ use lenso_capability_http_endpoint::{
 use lenso_kernel::{InvocationContext, Kernel, NativeApp, RuntimeFailure};
 use lenso_native_adapter::{NativeModuleFactory, NativeModuleFactoryContext, NativeModuleInstance};
 use lenso_runner::TokioDriver;
-use lenso_web_ingress::{PACKAGE_ID, WebIngressFactory};
+use lenso_web_ingress::{PACKAGE_ID, WebIngressConfig, WebIngressFactory};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
@@ -487,11 +487,15 @@ fn project() -> ProjectFile {
             ),
         ),
     );
-    project
-        .composition_mut()
-        .add_module(Module::new("web-ingress", PACKAGE_ID).with_requirement(
-            CapabilityRequirement::many(CAPABILITY_ID, DESCRIPTOR_VERSION),
-        ));
+    project.composition_mut().add_module(
+        Module::new("web-ingress", PACKAGE_ID)
+            .with_configuration_schema("crates/lenso-web-ingress/config.schema.json")
+            .with_configuration(serde_json::to_value(WebIngressConfig::default()).unwrap())
+            .with_requirement(CapabilityRequirement::many(
+                CAPABILITY_ID,
+                DESCRIPTOR_VERSION,
+            )),
+    );
     project.composition_mut().add_binding(Binding::new(
         "web-ingress",
         CAPABILITY_ID,

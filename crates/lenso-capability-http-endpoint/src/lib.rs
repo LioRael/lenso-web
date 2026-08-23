@@ -1,5 +1,7 @@
 //! Generated bindings for backend-owned HTTP Endpoint providers.
 
+mod authoring;
+
 #[allow(unknown_lints)]
 #[allow(
     clippy::chunks_exact_to_as_chunks,
@@ -11,7 +13,11 @@ mod generated {
     include!("generated.rs");
 }
 
+pub use authoring::{EndpointFuture, EndpointRoute, HttpEndpoint};
 pub use generated::*;
+
+#[doc(hidden)]
+pub use authoring::{__private, validate_endpoint_routes};
 
 #[cfg(test)]
 mod tests {

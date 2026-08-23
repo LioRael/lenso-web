@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "bind_address": {
+      "type": "string"
+    },
+    "max_request_body_bytes": {
+      "type": "integer"
+    },
+    "max_request_head_bytes": {
+      "type": "integer"
+    },
+    "max_concurrent_requests": {
+      "type": "integer"
+    },
+    "request_timeout_millis": {
+      "type": "integer"
+    }
+  },
+  "additionalProperties": false
+}

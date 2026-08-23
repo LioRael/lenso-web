@@ -3,9 +3,9 @@ use std::{cell::Cell, collections::HashSet, convert::Infallible, panic::AssertUn
 use bytes::Bytes;
 use futures::{FutureExt as _, StreamExt as _, stream::FuturesUnordered};
 use http::{
-    HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri,
+    HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri, Version,
     header::{
-        AUTHORIZATION, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST, TE, TRAILER,
+        ALLOW, AUTHORIZATION, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST, TE, TRAILER,
         TRANSFER_ENCODING, UPGRADE,
     },
 };
@@ -14,7 +14,10 @@ use hyper::{body::Incoming, server::conn::http1, service::service_fn};
 use hyper_util::rt::TokioIo;
 use lenso_capability_http_endpoint::HandleResponse;
 use lenso_kernel::CancellationToken;
-use tokio::{net::TcpListener, sync::Semaphore};
+use tokio::{
+    net::TcpListener,
+    sync::{Semaphore, oneshot},
+};
 
 use crate::{WebIngressConfig, routing::DispatchError, routing::RouteTable};
 
@@ -36,7 +39,9 @@ pub(super) struct InboundHeader {
 #[derive(Debug)]
 pub(super) struct InboundRequest {
     pub(super) body: Bytes,
+    pub(super) cancellation: CancellationToken,
     pub(super) credential: Option<CredentialEvidence>,
+    pub(super) disconnected: oneshot::Receiver<()>,
     pub(super) headers: Vec<InboundHeader>,
     pub(super) method: Method,
     pub(super) path: String,
@@ -51,10 +56,22 @@ enum RequestRejection {
 
 #[derive(Clone, Debug)]
 struct IngressService {
+    cancellation: CancellationToken,
     config: WebIngressConfig,
     routes: Rc<RouteTable>,
     concurrency: Rc<Semaphore>,
     next_request_id: Rc<Cell<u64>>,
+}
+
+#[derive(Debug)]
+struct CancelRequestOnDrop(Option<oneshot::Sender<()>>);
+
+impl Drop for CancelRequestOnDrop {
+    fn drop(&mut self) {
+        if let Some(cancel) = self.0.take() {
+            let _ = cancel.send(());
+        }
+    }
 }
 
 fn request_id_header_value(mut value: u64) -> HeaderValue {
@@ -81,14 +98,6 @@ struct IngressResponse {
 }
 
 impl IngressResponse {
-    fn empty(status: StatusCode) -> Self {
-        Self {
-            status,
-            headers: HeaderMap::new(),
-            body: Bytes::new(),
-        }
-    }
-
     fn json(status: StatusCode, body: &'static str) -> Self {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -117,9 +126,10 @@ pub(super) async fn serve(
     config: WebIngressConfig,
     routes: std::rc::Rc<RouteTable>,
     cancellation: CancellationToken,
-) {
+) -> std::io::Result<()> {
     let service = IngressService {
-        concurrency: Rc::new(Semaphore::new(config.max_concurrent_requests)),
+        cancellation: cancellation.clone(),
+        concurrency: Rc::new(Semaphore::new(config.max_concurrent_requests())),
         config,
         routes,
         next_request_id: Rc::new(Cell::new(0)),
@@ -128,10 +138,18 @@ pub(super) async fn serve(
     let mut connections = FuturesUnordered::new();
     loop {
         tokio::select! {
-            () = cancellation.cancelled() => break,
+            () = cancellation.cancelled() => {
+                shutdown.send_replace(true);
+                while connections.next().await.is_some() {}
+                return Ok(());
+            }
             accepted = listener.accept() => {
-                let Ok((stream, _)) = accepted else {
-                    break;
+                let (stream, _) = match accepted {
+                    Ok(accepted) => accepted,
+                    Err(error) => {
+                        shutdown.send_replace(true);
+                        return Err(error);
+                    }
                 };
                 let connection_service = service.clone();
                 let mut shutdown_signal = shutdown.subscribe();
@@ -150,11 +168,20 @@ pub(super) async fn serve(
                     }
                 }));
             }
-            Some(_) = connections.next(), if !connections.is_empty() => {}
+            completed = connections.next(), if !connections.is_empty() => {
+                if let Some(Err(error)) = completed {
+                    shutdown.send_replace(true);
+                    return Err(std::io::Error::other(format!(
+                        "Web Ingress connection task failed: {error}"
+                    )));
+                }
+            }
         }
     }
-    shutdown.send_replace(true);
-    while connections.next().await.is_some() {}
+}
+
+pub(super) fn assert_server_result(result: std::io::Result<()>) {
+    result.unwrap_or_else(|error| panic!("Web Ingress server failed: {error}"));
 }
 
 async fn wait_for_shutdown(shutdown: &mut tokio::sync::watch::Receiver<bool>) {
@@ -170,27 +197,28 @@ impl IngressService {
         self,
         mut request: Request<Incoming>,
     ) -> Result<Response<Full<Bytes>>, Infallible> {
-        let _permit = self
-            .concurrency
-            .acquire()
-            .await
-            .expect("the Ingress concurrency semaphore remains open");
         mark_sensitive_headers(request.headers_mut());
-        let request_id = ensure_request_id(request.headers_mut(), &self.next_request_id);
-        let mut response = if request_head_size(&request) > self.config.max_request_head_bytes {
+        let request_head_len = canonical_request_head_len(&request);
+        let request_id = replace_request_id(request.headers_mut(), &self.next_request_id);
+        let response = if request_head_len > self.config.max_request_head_bytes() {
             IngressResponse::json(
                 StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
                 r#"{"error":"request_header_fields_too_large"}"#,
             )
         } else {
-            self.dispatch(request).await
-        }
-        .into_response();
-        response.headers_mut().insert(REQUEST_ID_HEADER, request_id);
-        response
-            .headers_mut()
-            .insert(NOSNIFF_HEADER, HeaderValue::from_static("nosniff"));
-        Ok(response)
+            let permit = tokio::select! {
+                permit = self.concurrency.acquire() => Some(
+                    permit.expect("the Ingress concurrency semaphore remains open")
+                ),
+                () = self.cancellation.cancelled() => None,
+            };
+            if let Some(_permit) = permit {
+                self.dispatch(request).await
+            } else {
+                unavailable()
+            }
+        };
+        Ok(with_transport_headers(response.into_response(), request_id))
     }
 
     async fn dispatch(&self, request: Request<Incoming>) -> IngressResponse {
@@ -199,30 +227,45 @@ impl IngressService {
             .headers
             .get(CONTENT_LENGTH)
             .and_then(|value| value.to_str().ok()?.parse::<usize>().ok());
-        if content_length.is_some_and(|length| length > self.config.max_request_body_bytes) {
+        if content_length.is_some_and(|length| length > self.config.max_request_body_bytes()) {
             return payload_too_large();
         }
-        let body_limit = content_length.map_or(self.config.max_request_body_bytes, |length| {
-            length.min(self.config.max_request_body_bytes)
+        let body_limit = content_length.map_or(self.config.max_request_body_bytes(), |length| {
+            length.min(self.config.max_request_body_bytes())
         });
-        let body = match Limited::new(body, body_limit).collect().await {
+        let body = tokio::select! {
+            body = Limited::new(body, body_limit).collect() => body,
+            () = self.cancellation.cancelled() => return unavailable(),
+        };
+        let body = match body {
             Ok(body) => body.to_bytes(),
             Err(error) if error.downcast_ref::<LengthLimitError>().is_some() => {
                 return payload_too_large();
             }
             Err(_) => return bad_request(),
         };
-        let request = match inbound_request(&parts.method, &parts.uri, &parts.headers, body) {
+        let (disconnect, disconnected) = oneshot::channel();
+        let cancel_on_drop = CancelRequestOnDrop(Some(disconnect));
+        let request = match inbound_request(
+            &parts.method,
+            &parts.uri,
+            &parts.headers,
+            body,
+            self.cancellation.clone(),
+            disconnected,
+        ) {
             Ok(request) => request,
             Err(RequestRejection::BadRequest) => return bad_request(),
         };
-        match AssertUnwindSafe(self.routes.dispatch(request))
+        let response = match AssertUnwindSafe(self.routes.dispatch(request))
             .catch_unwind()
             .await
         {
             Ok(result) => dispatch_response(result),
             Err(_) => unavailable(),
-        }
+        };
+        drop(cancel_on_drop);
+        response
     }
 }
 
@@ -232,13 +275,14 @@ fn dispatch_response(result: Result<HandleResponse, DispatchError>) -> IngressRe
         Err(DispatchError::NotFound) => {
             IngressResponse::json(StatusCode::NOT_FOUND, r#"{"error":"not_found"}"#)
         }
-        Err(DispatchError::MethodNotAllowed) => IngressResponse::json(
-            StatusCode::METHOD_NOT_ALLOWED,
-            r#"{"error":"method_not_allowed"}"#,
-        ),
+        Err(DispatchError::MethodNotAllowed(allowed)) => method_not_allowed(&allowed),
         Err(DispatchError::Rejected) => {
             IngressResponse::json(StatusCode::BAD_GATEWAY, r#"{"error":"endpoint_rejected"}"#)
         }
+        Err(DispatchError::TimedOut) => IngressResponse::json(
+            StatusCode::GATEWAY_TIMEOUT,
+            r#"{"error":"endpoint_timeout"}"#,
+        ),
         Err(DispatchError::Unavailable) => unavailable(),
     }
 }
@@ -251,10 +295,7 @@ fn mark_sensitive_headers(headers: &mut HeaderMap) {
     }
 }
 
-fn ensure_request_id(headers: &mut HeaderMap, next: &Cell<u64>) -> HeaderValue {
-    if let Some(request_id) = headers.get(REQUEST_ID_HEADER) {
-        return request_id.clone();
-    }
+fn replace_request_id(headers: &mut HeaderMap, next: &Cell<u64>) -> HeaderValue {
     let value = next.get();
     next.set(value.wrapping_add(1));
     let request_id = request_id_header_value(value);
@@ -312,6 +353,8 @@ fn inbound_request(
     uri: &Uri,
     headers: &HeaderMap,
     body: Bytes,
+    cancellation: CancellationToken,
+    disconnected: oneshot::Receiver<()>,
 ) -> Result<InboundRequest, RequestRejection> {
     let request_id = request_id(headers)?;
     let credential = credential(headers)?;
@@ -331,7 +374,9 @@ fn inbound_request(
         .collect::<Result<Vec<_>, _>>()?;
     Ok(InboundRequest {
         body,
+        cancellation,
         credential,
+        disconnected,
         headers,
         method: normalized_method(method),
         path: uri.path().to_owned(),
@@ -381,14 +426,36 @@ fn from_endpoint(response: HandleResponse) -> IngressResponse {
     }
 }
 
-fn request_head_size<B>(request: &Request<B>) -> usize {
+fn canonical_request_head_len<B>(request: &Request<B>) -> usize {
     request.method().as_str().len()
+        + 1
         + serialized_uri_len(request.uri())
+        + 1
+        + version_len(request.version())
+        + 2
         + request
             .headers()
             .iter()
-            .map(|(name, value)| name.as_str().len() + value.as_bytes().len())
+            .map(|(name, value)| name.as_str().len() + 2 + value.as_bytes().len() + 2)
             .sum::<usize>()
+        + 2
+}
+
+const fn version_len(_version: Version) -> usize {
+    8
+}
+
+fn with_transport_headers(
+    mut response: Response<Full<Bytes>>,
+    request_id: HeaderValue,
+) -> Response<Full<Bytes>> {
+    response
+        .headers_mut()
+        .insert(REQUEST_ID_HEADER.clone(), request_id);
+    response
+        .headers_mut()
+        .insert(NOSNIFF_HEADER, HeaderValue::from_static("nosniff"));
+    response
 }
 
 fn serialized_uri_len(uri: &Uri) -> usize {
@@ -440,15 +507,34 @@ fn bad_request() -> IngressResponse {
     IngressResponse::json(StatusCode::BAD_REQUEST, r#"{"error":"bad_request"}"#)
 }
 
+fn payload_too_large() -> IngressResponse {
+    IngressResponse::json(
+        StatusCode::PAYLOAD_TOO_LARGE,
+        r#"{"error":"payload_too_large"}"#,
+    )
+}
+
+fn method_not_allowed(allowed: &[Method]) -> IngressResponse {
+    let mut response = IngressResponse::json(
+        StatusCode::METHOD_NOT_ALLOWED,
+        r#"{"error":"method_not_allowed"}"#,
+    );
+    let value = allowed
+        .iter()
+        .map(Method::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    if let Ok(value) = HeaderValue::from_str(&value) {
+        response.headers.insert(ALLOW, value);
+    }
+    response
+}
+
 fn unavailable() -> IngressResponse {
     IngressResponse::json(
         StatusCode::SERVICE_UNAVAILABLE,
         r#"{"error":"endpoint_unavailable"}"#,
     )
-}
-
-fn payload_too_large() -> IngressResponse {
-    IngressResponse::empty(StatusCode::PAYLOAD_TOO_LARGE)
 }
 
 fn invalid_endpoint_response() -> IngressResponse {
@@ -460,8 +546,11 @@ fn invalid_endpoint_response() -> IngressResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::{request_id_header_value, serialized_uri_len};
-    use axum::http::Uri;
+    use super::{
+        assert_server_result, canonical_request_head_len, request_id_header_value,
+        serialized_uri_len,
+    };
+    use axum::http::{Request, Uri, Version};
 
     #[test]
     fn request_id_header_values_cover_the_full_counter_range() {
@@ -482,5 +571,26 @@ mod tests {
             let uri = uri.parse::<Uri>().expect("fixture URI");
             assert_eq!(serialized_uri_len(&uri), uri.to_string().len());
         }
+    }
+
+    #[test]
+    fn canonical_request_head_length_includes_wire_separators() {
+        let request = Request::builder()
+            .method("GET")
+            .uri("/orders/42?include=items")
+            .version(Version::HTTP_11)
+            .header("host", "example.test")
+            .body(())
+            .unwrap();
+        assert_eq!(
+            canonical_request_head_len(&request),
+            "GET /orders/42?include=items HTTP/1.1\r\nhost: example.test\r\n\r\n".len()
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Web Ingress server failed")]
+    fn server_errors_are_not_silently_discarded() {
+        assert_server_result(Err(std::io::Error::other("fixture failure")));
     }
 }
