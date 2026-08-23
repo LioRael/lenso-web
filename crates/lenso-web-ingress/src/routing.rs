@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, rc::Rc, time::Duration};
+use std::{collections::HashMap, rc::Rc, time::Duration};
 
 use axum::http::Method;
 use lenso_capability_http_endpoint::{
@@ -20,7 +20,7 @@ struct RouteTarget {
 #[derive(Debug)]
 pub(super) struct RouteTable {
     dependencies: ModuleDependencies,
-    methods: BTreeMap<String, Router<RouteTarget>>,
+    methods: HashMap<Method, Router<RouteTarget>>,
     request_timeout: Duration,
 }
 
@@ -44,7 +44,7 @@ impl RouteTable {
                 detail: "HTTP Endpoint describe/handle bindings are inconsistent".to_owned(),
             });
         }
-        let mut methods = BTreeMap::<String, Router<RouteTarget>>::new();
+        let mut methods = HashMap::<Method, Router<RouteTarget>>::new();
         for (provider_index, (descriptor, handler)) in
             descriptors.into_iter().zip(handlers).enumerate()
         {
@@ -59,9 +59,12 @@ impl RouteTable {
             let handler = Rc::new(handler);
             for route in description.routes {
                 let method = route.method.trim().to_ascii_uppercase();
-                if method.is_empty()
-                    || Method::from_bytes(method.as_bytes()).is_err()
-                    || route.route_id.trim().is_empty()
+                let Ok(method) = Method::from_bytes(method.as_bytes()) else {
+                    return Err(module_failure(format!(
+                        "HTTP Endpoint provider {provider_index} declared an invalid route"
+                    )));
+                };
+                if route.route_id.trim().is_empty()
                     || !route.path.starts_with('/')
                     || route.path.contains(['?', '#'])
                 {
@@ -103,8 +106,7 @@ impl RouteTable {
         &self,
         request: InboundRequest,
     ) -> Result<HandleResponse, DispatchError> {
-        let method = request.method.to_ascii_uppercase();
-        let Some(router) = self.methods.get(&method) else {
+        let Some(router) = self.methods.get(&request.method) else {
             return if self.path_exists(&request.path) {
                 Err(DispatchError::MethodNotAllowed)
             } else {
@@ -137,7 +139,7 @@ impl RouteTable {
                 HANDLE_OPERATION,
                 context,
                 HandleRequest {
-                    body: request.body,
+                    body: request.body.to_vec().into(),
                     credential: request
                         .credential
                         .map(|credential| HandleRequestCredential {
@@ -152,7 +154,7 @@ impl RouteTable {
                             value: header.value,
                         })
                         .collect(),
-                    method,
+                    method: request.method.as_str().to_owned(),
                     path: request.path,
                     path_parameters,
                     query: request.query,

@@ -8,17 +8,16 @@ use std::{
     time::Duration,
 };
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures::future::LocalBoxFuture;
 use lenso_authoring::{
     Binding, CapabilityEndpoint, CapabilityRequirement, ContractInput, Module, PackageInput,
     PackageSource, ProjectAuthoring, ProjectFile, ResolutionOptions,
 };
 use lenso_capability_http_endpoint::{
-    CAPABILITY_ID, DESCRIBE_OPERATION, DESCRIPTOR_VERSION, DescribeRequest, DescribeResponse,
-    DescribeResponseRoutesItem, EndpointDescribeInvocationError, EndpointEndpoint,
-    EndpointHandleInvocationError, EndpointProvider, HANDLE_OPERATION, HandleError, HandleRequest,
-    HandleResponse, HandleResponseHeadersItem,
+    Bytes as ContractBytes, CAPABILITY_ID, DESCRIBE_OPERATION, DESCRIPTOR_VERSION, DescribeRequest,
+    DescribeResponse, DescribeResponseRoutesItem, EndpointDescribeInvocationError,
+    EndpointEndpoint, EndpointHandleInvocationError, EndpointProvider, HANDLE_OPERATION,
+    HandleError, HandleRequest, HandleResponse, HandleResponseHeadersItem,
 };
 use lenso_kernel::{InvocationContext, Kernel, NativeApp, RuntimeFailure};
 use lenso_native_adapter::{NativeModuleFactory, NativeModuleFactoryContext, NativeModuleInstance};
@@ -34,6 +33,7 @@ const ORDERS_PACKAGE_ID: &str = "fixture.orders-http";
 const STATUS_PACKAGE_ID: &str = "fixture.status-http";
 
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::too_many_lines)]
 async fn routes_bound_backend_modules_and_preserves_http_evidence() {
     LocalSet::new()
         .run_until(async {
@@ -44,6 +44,7 @@ async fn routes_bound_backend_modules_and_preserves_http_evidence() {
                 [
                     ("orders.read", "GET", "/orders/{order_id}"),
                     ("orders.slow", "GET", "/orders-slow"),
+                    ("orders.panic", "GET", "/panic"),
                 ],
             )
             .with_call_tracker(active_calls.clone(), max_active_calls.clone());
@@ -122,6 +123,8 @@ async fn routes_bound_backend_modules_and_preserves_http_evidence() {
 
             assert_hop_filtering_and_parallel_dispatch(address, &orders).await;
 
+            assert_eq!(request(address, "GET", "/panic", &[], "").await.status, 503);
+
             let health = request(address, "GET", "/health", &[], "").await;
             assert_eq!(health.status, 200);
             assert!(health.body.contains(STATUS_PACKAGE_ID));
@@ -195,6 +198,39 @@ async fn route_collisions_fail_activation_before_readiness() {
             .await
             .expect_err("colliding routes must fail before App readiness");
             assert!(format!("{error:?}").contains("HTTP route collision"));
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn concurrency_limit_backpressures_without_dropping_requests() {
+    LocalSet::new()
+        .run_until(async {
+            let endpoint = FixtureEndpointFactory::new(
+                ORDERS_PACKAGE_ID,
+                [("orders.slow", "GET", "/orders-slow")],
+            );
+            let ingress = WebIngressFactory::new(WebIngressConfig {
+                max_concurrent_requests: 1,
+                ..WebIngressConfig::default()
+            });
+            let app = start(
+                project(&[ProviderPlan::new("orders-http", ORDERS_PACKAGE_ID)]),
+                &ingress,
+                [endpoint.clone()],
+            )
+            .await
+            .expect("App should start with a single-request concurrency limit");
+            let address = ingress.local_address().unwrap();
+
+            let (first, second) = tokio::join!(
+                request(address, "GET", "/orders-slow", &[], ""),
+                request(address, "GET", "/orders-slow", &[], "")
+            );
+            assert_eq!(first.status, 200);
+            assert_eq!(second.status, 200);
+            assert_eq!(endpoint.max_active_calls(), 1);
+            app.shutdown(Duration::from_secs(1)).await;
         })
         .await;
 }
@@ -449,6 +485,7 @@ impl EndpointProvider for FixtureEndpoint {
         _context: InvocationContext,
         request: HandleRequest,
     ) -> LocalBoxFuture<'static, Result<HandleResponse, EndpointHandleInvocationError>> {
+        assert_ne!(request.route_id, "orders.panic", "fixture endpoint panic");
         self.observed.borrow_mut().replace(request.clone());
         let package_id = self.package_id;
         let active_calls = self.active_calls.clone();
@@ -466,14 +503,14 @@ impl EndpointProvider for FixtureEndpoint {
             }
             if request.route_id == "orders.invalid" {
                 return Ok(HandleResponse {
-                    body: "not-base64".to_owned(),
+                    body: ContractBytes::from(b"invalid status".as_slice()),
                     headers: Vec::new(),
-                    status: 200,
+                    status: 1_000,
                 });
             }
             if request.route_id == "orders.hop-response" {
                 return Ok(HandleResponse {
-                    body: STANDARD.encode("invalid hop header"),
+                    body: ContractBytes::from(b"invalid hop header".as_slice()),
                     headers: vec![HandleResponseHeadersItem {
                         name: "connection".to_owned(),
                         value: "close".to_owned(),
@@ -486,7 +523,7 @@ impl EndpointProvider for FixtureEndpoint {
                 package_id, request.route_id
             );
             Ok(HandleResponse {
-                body: STANDARD.encode(body),
+                body: body.into_bytes().into(),
                 headers: vec![HandleResponseHeadersItem {
                     name: "content-type".to_owned(),
                     value: "application/json; charset=utf-8".to_owned(),

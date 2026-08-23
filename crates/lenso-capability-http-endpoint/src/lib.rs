@@ -1,6 +1,17 @@
 //! Generated bindings for backend-owned HTTP Endpoint providers.
 
-include!("generated.rs");
+#[allow(unknown_lints)]
+#[allow(
+    clippy::chunks_exact_to_as_chunks,
+    clippy::manual_div_ceil,
+    clippy::manual_is_multiple_of,
+    clippy::verbose_bit_mask
+)]
+mod generated {
+    include!("generated.rs");
+}
+
+pub use generated::*;
 
 #[cfg(test)]
 mod tests {
@@ -19,7 +30,7 @@ mod tests {
         assert_eq!(decode_describe_response(&wire).unwrap(), description);
 
         let request = HandleRequest {
-            body: "AAEC".to_owned(),
+            body: Bytes::from(vec![0, 1, 2]),
             credential: Some(HandleRequestCredential {
                 scheme: "bearer".to_owned(),
                 value: "token".to_owned(),
@@ -39,6 +50,7 @@ mod tests {
             route_id: "orders.read".to_owned(),
         };
         let wire = encode_handle_request(&request).unwrap();
+        assert!(wire.contains(r#""body":"AAEC""#));
         assert_eq!(decode_handle_request(&wire).unwrap(), request);
     }
 }
