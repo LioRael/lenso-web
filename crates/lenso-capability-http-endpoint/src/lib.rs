@@ -1,6 +1,8 @@
 //! Generated bindings for backend-owned HTTP Endpoint providers.
 
 mod authoring;
+mod extract;
+pub mod response;
 
 #[allow(unknown_lints)]
 #[allow(
@@ -13,7 +15,8 @@ mod generated {
     include!("generated.rs");
 }
 
-pub use authoring::{EndpointFuture, EndpointRoute, HttpEndpoint};
+pub use authoring::{EndpointFuture, EndpointRoute, HttpEndpoint, MiddlewareOutcome};
+pub use extract::{ExtractorFuture, ExtractorRejection, FromRequest, Json, Path, Query, RequestId};
 pub use generated::*;
 pub use lenso_capability_http_endpoint_macros::endpoint;
 

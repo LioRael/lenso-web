@@ -19,6 +19,7 @@ route registry.
 
 - `lenso-capability-http-endpoint`
 - `lenso-capability-http-client`
+- `lenso-http-auth`
 - `lenso-http-egress`
 - `lenso-web-ingress`
 
@@ -65,23 +66,67 @@ Capability description and handler dispatch:
 #[derive(Clone, Debug)]
 struct OrdersHttp;
 
+#[derive(serde::Deserialize)]
+struct CreateOrder {
+    total_cents: u64,
+}
+
+#[derive(serde::Serialize)]
+struct CreatedOrder<'a> {
+    id: &'a str,
+}
+
 #[endpoint]
 impl OrdersHttp {
     #[post("orders.create", "/orders")]
     async fn create(
         &self,
-        context: InvocationContext,
-        request: HandleRequest,
+        Json(_order): Json<CreateOrder>,
     ) -> Result<HandleResponse, EndpointHandleInvocationError> {
-        // Authenticate, call the Orders Capability, and map its result to HTTP.
+        Ok(response::json(
+            StatusCode::CREATED,
+            &CreatedOrder { id: "order-42" },
+        )?.with_header(
+            &header::LOCATION,
+            &HeaderValue::from_static("/orders/order-42"),
+        )?)
     }
 }
 ```
+
+The omitted imports are available from
+`lenso_capability_http_endpoint::response`: `response`, `StatusCode`,
+`HeaderValue`, and `header`. Common responses use `response::json`,
+`response::problem`, `response::text`, or `response::empty`; direct construction
+of the generated wire DTO is only needed for unusual binary bodies.
 
 The supported method attributes are `get`, `post`, `put`, `patch`, `delete`,
 `head`, and `options`. Each handler declares its stable route ID and path.
 `http_endpoint!` remains available for existing providers and generated source
 that prefers one explicit route table.
+
+Attribute-authored handlers may use `Path<T>`, `Query<T>`, `Json<T>`, and
+`RequestId` extractors. Route-owned middleware runs before extraction:
+
+```rust,ignore
+#[middleware(trace_request)]
+#[get("orders.read", "/orders/{order_id}")]
+async fn read(
+    &self,
+    context: InvocationContext,
+    Path(path): Path<OrderPath>,
+) -> Result<HandleResponse, EndpointHandleInvocationError> {
+    self.read_authenticated(context, path.order_id).await
+}
+```
+
+The named async middleware method receives `InvocationContext` and
+`HandleRequest`, then returns `MiddlewareOutcome::next` with an enriched
+context/request or `MiddlewareOutcome::response` to short-circuit. Multiple
+middleware declarations run in order. Custom protocol-local extractors can
+implement `FromRequest<Provider>`; extractors are asynchronous, can access the
+provider's activation-time clients, and can enrich the context seen by later
+extractors and the handler.
 
 The macro rejects empty or malformed routes, duplicate route identifiers, and
 duplicate exact method/path pairs during compilation. Web Ingress still owns
@@ -89,6 +134,49 @@ method/path matching, path-parameter extraction, semantic path-shape and
 cross-provider collision detection, and transport limits. Endpoint handlers
 own authentication orchestration, request decoding, business Capability calls,
 and intentional HTTP responses.
+
+For authenticated HTTP, Ingress selects one `Authorization` credential into
+`HandleRequest::credential`; it does not decide identity or permission. The
+`lenso-http-auth` integration crate handles Auth invocation, stable `401`/`403`
+responses, and assertion attachment while the application owns meaningful
+actor types:
+
+```rust,ignore
+struct UserActor { subject: String }
+
+impl AuthenticatedHttpActor for UserActor {
+    const KIND: &'static str = "user";
+
+    fn from_assertion(assertion: &ActorAssertion) -> Self {
+        Self { subject: assertion.subject().to_owned() }
+    }
+}
+
+impl FromRequest<OrdersHttp> for UserActor {
+    fn from_request<'a>(
+        provider: &'a OrdersHttp,
+        context: &'a mut InvocationContext,
+        request: &'a HandleRequest,
+    ) -> ExtractorFuture<'a, Self> {
+        extract_authenticated_actor(provider, context, request)
+    }
+}
+```
+
+The Endpoint provider implements `AuthClientSource` to return its explicitly
+bound activation-time `AuthClient`. A handler can then request `UserActor`
+directly; an endpoint for a distinct credential actor kind can define
+`AdminActor` in the same way. These `AuthenticatedHttpActor` types are edge
+authentication projections, not
+permission shortcuts: roles, tenant access, resource ownership, and every final
+authorization decision remain in the target business Module, which verifies
+the attached assertion. Release clients during deactivation rather than
+resolving bindings per request.
+
+`lenso-http-auth` is optional integration glue. Neither portable HTTP
+Capability crate nor the Web Ingress library has a normal dependency on it;
+removing the helper and its application integration leaves unauthenticated or
+otherwise authenticated Endpoint providers usable without a Kernel branch.
 
 The SDK is additive: existing providers that implement `EndpointProvider`
 directly continue to work through the same immutable activation and dispatch
