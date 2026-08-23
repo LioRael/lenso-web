@@ -906,9 +906,9 @@ dependencies = [
 
 [[package]]
 name = "lenso-authoring"
-version = "0.1.4"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b536039f69195b68762790d87e61c1f28b8f525e7325f81a866a0fa825e74095"
+checksum = "caea4b1fbd156216d1e3e7d923db3e94e590b48b0493ed6d75a4ef593aece7aa"
 dependencies = [
  "lenso-app-plan",
  "lenso-bun-adapter",
@@ -963,9 +963,9 @@ dependencies = [
 
 [[package]]
 name = "lenso-contract-codegen"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8c5170604ed4902a5cd22091427d8c7a69af337748ea306b1c3b497d42e25ce"
+checksum = "d67b5f69fcc9bd5334988bf3ade6856b741c80b71dc6e2f82aa50afe7239fba7"
 dependencies = [
  "semver",
  "serde_json",
