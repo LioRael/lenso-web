@@ -53,4 +53,17 @@ mod tests {
         assert!(wire.contains(r#""body":"AAEC""#));
         assert_eq!(decode_handle_request(&wire).unwrap(), request);
     }
+
+    #[test]
+    fn endpoint_contract_values_support_cross_lane_transfer() {
+        fn assert_send<T: Send>() {}
+
+        const { assert!(CROSS_LANE_TRANSFER) };
+        assert_send::<DescribeRequest>();
+        assert_send::<DescribeResponse>();
+        assert_send::<DescribeError>();
+        assert_send::<HandleRequest>();
+        assert_send::<HandleResponse>();
+        assert_send::<HandleError>();
+    }
 }

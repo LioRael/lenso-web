@@ -5,7 +5,18 @@ use std::{
     time::{Duration, Instant},
 };
 
-use axum::{Router, body::Bytes, http::Uri, response::IntoResponse, routing::post};
+use axum::{
+    Router,
+    body::{Body, Bytes},
+    extract::State,
+    http::{
+        HeaderName, HeaderValue, Request, Uri,
+        header::{AUTHORIZATION, COOKIE},
+    },
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+    routing::post,
+};
 use futures::{future::LocalBoxFuture, future::join_all};
 use lenso_authoring::{
     Binding, CapabilityEndpoint, CapabilityRequirement, ContractInput, Module, PackageInput,
@@ -24,7 +35,15 @@ use lenso_web_ingress::{PACKAGE_ID, WebIngressFactory};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
+    sync::{mpsc, oneshot},
     task::LocalSet,
+};
+use tower::{ServiceBuilder, limit::GlobalConcurrencyLimitLayer};
+use tower_http::{
+    limit::RequestBodyLimitLayer,
+    request_id::{MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
+    sensitive_headers::SetSensitiveRequestHeadersLayer,
+    set_header::SetResponseHeaderLayer,
 };
 
 const FIXTURE_PACKAGE_ID: &str = "benchmark.http-endpoint";
@@ -32,49 +51,99 @@ const REQUEST_BODY_SIZES: [usize; 3] = [0, 1024, 65_536];
 const CONNECTION_COUNTS: [usize; 2] = [1, 8];
 const SAMPLE_COUNT: usize = 3;
 const WARMUP_REQUESTS_PER_CONNECTION: usize = 32;
+const BENCHMARK_MAX_REQUEST_BYTES: usize = 1024 * 1024;
+const BENCHMARK_MAX_REQUEST_HEAD_BYTES: usize = 32 * 1024;
+const BENCHMARK_MAX_CONCURRENT_REQUESTS: usize = 1024;
+const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
+const NOSNIFF_HEADER: HeaderName = HeaderName::from_static("x-content-type-options");
 
-fn main() {
+pub(crate) fn main() {
+    main_with_observer(&mut NoopObserver);
+}
+
+pub(crate) trait MeasurementObserver {
+    fn before_measure(&mut self) {}
+
+    fn after_measure(
+        &mut self,
+        _server: &str,
+        _request_body_size: usize,
+        _connections: usize,
+        _requests: usize,
+    ) {
+    }
+}
+
+struct NoopObserver;
+
+impl MeasurementObserver for NoopObserver {}
+
+pub(crate) fn main_with_observer(observer: &mut impl MeasurementObserver) {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("benchmark runtime")
-        .block_on(LocalSet::new().run_until(run()));
+        .block_on(LocalSet::new().run_until(run(observer)));
 }
 
-async fn run() {
+async fn run(observer: &mut impl MeasurementObserver) {
     let ingress = WebIngressFactory::default();
     let app = start_lenso(&ingress).await.expect("Lenso App should start");
     let lenso_address = ingress.local_address().expect("Ingress should be bound");
     let (axum_address, axum_shutdown) = start_axum().await;
+    let (transport_address, transport_shutdown) = start_axum_transport().await;
+    let (bridge_address, bridge_shutdown) = start_bridge().await;
+    let selected = std::env::var("LENSO_HTTP_BENCH_SERVER").ok();
+    let servers = [
+        ("axum", axum_address),
+        ("axum_transport", transport_address),
+        ("bridge", bridge_address),
+        ("lenso", lenso_address),
+    ];
 
     println!(
         "HTTP ingress benchmark: samples={SAMPLE_COUNT}, warmup_per_connection={WARMUP_REQUESTS_PER_CONNECTION}"
     );
     println!("server\trequest_body_bytes\tconnections\trequests\tmedian_req_s\tsamples_req_s");
     for request_body_size in REQUEST_BODY_SIZES {
+        if !selected_number("LENSO_HTTP_BENCH_BODY_BYTES", request_body_size) {
+            continue;
+        }
         let requests = request_count(request_body_size);
         for connections in CONNECTION_COUNTS {
-            report(
-                "axum",
-                axum_address,
-                request_body_size,
-                connections,
-                requests,
-            )
-            .await;
-            report(
-                "lenso",
-                lenso_address,
-                request_body_size,
-                connections,
-                requests,
-            )
-            .await;
+            if !selected_number("LENSO_HTTP_BENCH_CONNECTIONS", connections) {
+                continue;
+            }
+            for (server, address) in servers {
+                if selected
+                    .as_deref()
+                    .is_none_or(|selected| selected == server)
+                {
+                    report(
+                        observer,
+                        server,
+                        address,
+                        request_body_size,
+                        connections,
+                        requests,
+                    )
+                    .await;
+                }
+            }
         }
     }
 
     let _ = axum_shutdown.send(());
+    let _ = transport_shutdown.send(());
+    let _ = bridge_shutdown.send(());
     app.shutdown(Duration::from_secs(1)).await;
+}
+
+fn selected_number(name: &str, actual: usize) -> bool {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .is_none_or(|selected| selected == actual)
 }
 
 fn request_count(request_body_size: usize) -> usize {
@@ -90,6 +159,7 @@ fn request_count(request_body_size: usize) -> usize {
 }
 
 async fn report(
+    observer: &mut impl MeasurementObserver,
     server: &str,
     address: SocketAddr,
     request_body_size: usize,
@@ -99,9 +169,16 @@ async fn report(
     let mut samples = Vec::with_capacity(SAMPLE_COUNT);
     for _ in 0..SAMPLE_COUNT {
         samples.push(
-            measure(address, request_body_size, connections, requests)
-                .await
-                .as_secs_f64(),
+            measure(
+                observer,
+                server,
+                address,
+                request_body_size,
+                connections,
+                requests,
+            )
+            .await
+            .as_secs_f64(),
         );
     }
     let mut rates = samples
@@ -123,6 +200,8 @@ async fn report(
 }
 
 async fn measure(
+    observer: &mut impl MeasurementObserver,
+    server: &str,
     address: SocketAddr,
     request_body_size: usize,
     connections: usize,
@@ -140,6 +219,7 @@ async fn measure(
     )
     .await;
 
+    observer.before_measure();
     let started = Instant::now();
     let base = requests / connections;
     let remainder = requests % connections;
@@ -147,7 +227,9 @@ async fn measure(
         client.requests(request_body_size, base + usize::from(index < remainder))
     }))
     .await;
-    started.elapsed()
+    let elapsed = started.elapsed();
+    observer.after_measure(server, request_body_size, connections, requests);
+    elapsed
 }
 
 struct Client {
@@ -251,6 +333,116 @@ async fn start_axum() -> (SocketAddr, tokio::sync::oneshot::Sender<()>) {
             })
             .await
             .expect("serve Axum benchmark");
+    });
+    (address, shutdown)
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BenchmarkRequestId;
+
+impl MakeRequestId for BenchmarkRequestId {
+    fn make_request_id<B>(&mut self, _request: &Request<B>) -> Option<RequestId> {
+        Some(RequestId::new(HeaderValue::from_static("benchmark")))
+    }
+}
+
+fn with_transport(app: Router) -> Router {
+    let transport = ServiceBuilder::new()
+        .layer(SetSensitiveRequestHeadersLayer::new([
+            AUTHORIZATION,
+            COOKIE,
+        ]))
+        .layer(SetRequestIdLayer::new(
+            REQUEST_ID_HEADER.clone(),
+            BenchmarkRequestId,
+        ))
+        .layer(PropagateRequestIdLayer::new(REQUEST_ID_HEADER))
+        .layer(SetResponseHeaderLayer::overriding(
+            NOSNIFF_HEADER,
+            HeaderValue::from_static("nosniff"),
+        ))
+        .layer(RequestBodyLimitLayer::new(BENCHMARK_MAX_REQUEST_BYTES))
+        .layer(GlobalConcurrencyLimitLayer::new(
+            BENCHMARK_MAX_CONCURRENT_REQUESTS,
+        ));
+    app.layer(middleware::from_fn(enforce_benchmark_head_limit))
+        .layer(transport)
+}
+
+async fn enforce_benchmark_head_limit(request: Request<Body>, next: Next) -> Response {
+    let size = request.method().as_str().len()
+        + request
+            .uri()
+            .path_and_query()
+            .map_or(0, |path| path.as_str().len())
+        + request
+            .headers()
+            .iter()
+            .map(|(name, value)| name.as_str().len() + value.as_bytes().len())
+            .sum::<usize>();
+    assert!(size <= BENCHMARK_MAX_REQUEST_HEAD_BYTES);
+    next.run(request).await
+}
+
+async fn start_axum_transport() -> (SocketAddr, oneshot::Sender<()>) {
+    start_benchmark_router(with_transport(
+        Router::new().route("/{*path}", post(direct_response)),
+    ))
+    .await
+}
+
+#[derive(Debug)]
+struct BridgeCall {
+    body: Bytes,
+    response: oneshot::Sender<Bytes>,
+}
+
+#[derive(Clone, Debug)]
+struct BenchmarkBridge {
+    sender: mpsc::Sender<BridgeCall>,
+}
+
+async fn bridge_response(State(bridge): State<BenchmarkBridge>, uri: Uri, body: Bytes) -> Bytes {
+    let expected = expected_body_size(&uri);
+    assert_eq!(body.len(), expected);
+    assert!(body.iter().all(|byte| *byte == b'x'));
+    let (response, receive) = oneshot::channel();
+    bridge
+        .sender
+        .send(BridgeCall { body, response })
+        .await
+        .expect("benchmark bridge dispatcher");
+    receive.await.expect("benchmark bridge response")
+}
+
+async fn start_bridge() -> (SocketAddr, oneshot::Sender<()>) {
+    let (sender, mut receiver) = mpsc::channel::<BridgeCall>(BENCHMARK_MAX_CONCURRENT_REQUESTS);
+    tokio::task::spawn_local(async move {
+        while let Some(call) = receiver.recv().await {
+            let _ = call.response.send(call.body);
+        }
+    });
+    start_benchmark_router(with_transport(
+        Router::new()
+            .route("/{*path}", post(bridge_response))
+            .with_state(BenchmarkBridge { sender }),
+    ))
+    .await
+}
+
+async fn start_benchmark_router(app: Router) -> (SocketAddr, oneshot::Sender<()>) {
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind layered benchmark listener");
+    let address = listener.local_addr().expect("layered benchmark address");
+    let (shutdown, receive_shutdown) = oneshot::channel();
+    tokio::task::spawn_local(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                let _ = receive_shutdown.await;
+            })
+            .await
+            .expect("serve layered benchmark");
     });
     (address, shutdown)
 }

@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use axum::{Router, body::Bytes, http::StatusCode, routing::get, routing::post};
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use lenso_app_plan::{
     AppComposition, CapabilityBinding, CapabilityEndpointPlan, CapabilityRequirementPlan,
     ModuleInstancePlan, ResolvedAppPlan,
@@ -63,7 +62,7 @@ async fn composed_client_calls_only_allowed_origin_with_bounded_protocol_evidenc
                 .unwrap()
                 .unwrap();
             assert_eq!(response.status, 201);
-            assert_eq!(STANDARD.decode(response.body).unwrap(), b"hello");
+            assert_eq!(response.body.as_slice(), b"hello");
             assert!(
                 response
                     .headers
@@ -226,7 +225,7 @@ fn request(
     body: &[u8],
 ) -> SendRequest {
     SendRequest {
-        body: STANDARD.encode(body),
+        body: body.into(),
         headers: headers.to_vec(),
         method: method.to_owned(),
         url: url.to_owned(),

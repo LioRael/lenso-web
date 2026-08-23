@@ -15,7 +15,7 @@ repository = "https://github.com/LioRael/lenso-web"
 rust-version = "1.94"
 
 [workspace.dependencies]
-base64 = "0.22"
+bytes = "1.12"
 futures = "0.3"
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] }
 serde = { version = "1.0", features = ["derive"] }

@@ -1,7 +1,8 @@
 {
   "id": "lenso.http.endpoint@1",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "portable": true,
+  "cross_lane_transfer": true,
   "operations": [
     {
       "name": "describe",

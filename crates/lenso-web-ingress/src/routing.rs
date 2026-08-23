@@ -139,7 +139,7 @@ impl RouteTable {
                 HANDLE_OPERATION,
                 context,
                 HandleRequest {
-                    body: request.body.to_vec().into(),
+                    body: request.body.into(),
                     credential: request
                         .credential
                         .map(|credential| HandleRequestCredential {
