@@ -205,35 +205,39 @@ stable route declaration as the source of `operationId`, method, and path:
 #[endpoint]
 impl OrdersHttp {
     #[get("orders.read", "/orders/{order_id}")]
-    #[openapi(
-        r#"{
-          "summary": "Read an order",
-          "responses": {
+    #[openapi({
+        summary: "Read an order",
+        responses: {
             "200": {
-              "description": "Order",
-              "content": {
-                "application/json": {
-                  "schema": {
-                    "type": "object",
-                    "required": ["id"],
-                    "properties": {"id": {"type": "string"}}
-                  }
+                description: "Order",
+                content: {
+                    "application/json": {
+                        schema: {
+                            "type": "object",
+                            required: ["id"],
+                            properties: { id: { "type": "string" } }
+                        }
+                    }
                 }
-              }
             }
-          }
-        }"#
-    )]
+        }
+    })]
     async fn read(&self) -> Result<HandleResponse, EndpointHandleInvocationError> {
         // ...
     }
 }
 ```
 
-`http_endpoint!` accepts the same object as `openapi = r#"{...}"#` in its route
-tuple. The authoring macro validates JSON and rejects a separately declared
-`operationId`. A route without metadata remains valid and receives an
-`Undocumented response.` fallback only when an OpenAPI document is assembled.
+The JSON-like syntax accepts ordinary identifier keys without quotes. Keys such
+as `"type"`, `"application/json"`, and `"$ref"` stay quoted. String, number,
+boolean, `null`, array, and nested object values are supported. The previous
+JSON string form remains compatible.
+
+`http_endpoint!` accepts the same syntax through
+`openapi = openapi_operation!({ ... })`. The authoring macros validate the DSL
+at compile time and reject a separately declared `operationId`. A route without
+metadata remains valid and receives an `Undocumented response.` fallback only
+when an OpenAPI document is assembled.
 
 The selected `lenso.openapi` Instance uses immutable configuration validated by
 `crates/lenso-openapi/config.schema.json`:

@@ -18,7 +18,7 @@ mod generated {
 pub use authoring::{EndpointFuture, EndpointRoute, HttpEndpoint, MiddlewareOutcome};
 pub use extract::{ExtractorFuture, ExtractorRejection, FromRequest, Json, Path, Query, RequestId};
 pub use generated::*;
-pub use lenso_capability_http_endpoint_macros::endpoint;
+pub use lenso_capability_http_endpoint_macros::{endpoint, openapi_operation};
 
 #[doc(hidden)]
 pub use authoring::{__private, validate_endpoint_routes};

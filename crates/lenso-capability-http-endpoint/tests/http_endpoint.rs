@@ -4,7 +4,7 @@ use futures::executor::block_on;
 use lenso_capability_http_endpoint::{
     Bytes, DescribeError, DescribeRequest, EndpointHandleInvocationError, EndpointProvider,
     HandleError, HandleRequest, HandleResponse, HandleResponseHeadersItem, HttpEndpoint,
-    http_endpoint,
+    http_endpoint, openapi_operation,
 };
 use lenso_kernel::{CancellationToken, InvocationContext};
 
@@ -45,7 +45,12 @@ http_endpoint! {
         "orders.create" => (
             "POST",
             "/orders",
-            openapi = r#"{"summary":"Create an order","responses":{"201":{"description":"Created"}}}"#
+            openapi = openapi_operation!({
+                summary: "Create an order",
+                responses: {
+                    "201": { description: "Created" }
+                }
+            })
         ) => create,
         "orders.read" => ("GET", "/orders/{order_id}") => read,
     }

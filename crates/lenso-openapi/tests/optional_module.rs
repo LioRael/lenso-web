@@ -175,9 +175,23 @@ struct OrdersHttp;
 #[endpoint]
 impl OrdersHttp {
     #[get("orders.read", "/orders/{order_id}")]
-    #[openapi(
-        r#"{"summary":"Read an order","responses":{"200":{"description":"Order","content":{"application/json":{"schema":{"type":"object","required":["id"],"properties":{"id":{"type":"string"}}}}}}}}"#
-    )]
+    #[openapi({
+        summary: "Read an order",
+        responses: {
+            "200": {
+                description: "Order",
+                content: {
+                    "application/json": {
+                        schema: {
+                            "type": "object",
+                            required: ["id"],
+                            properties: { id: { "type": "string" } }
+                        }
+                    }
+                }
+            }
+        }
+    })]
     async fn read(&self) -> Result<HandleResponse, EndpointHandleInvocationError> {
         futures::future::ready(()).await;
         Ok(response::json(
