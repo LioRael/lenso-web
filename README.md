@@ -1,6 +1,6 @@
 # Lenso Web
 
-General-purpose backend Web Interfaces and Modules for Lenso vNext.
+General-purpose backend Web Interfaces and Modules for Lenso.
 
 This repository owns:
 
@@ -57,14 +57,17 @@ Route providers are resolved through immutable `many` bindings. They describe
 their method/path table during activation, before the App Ready Gate opens;
 route collisions fail startup instead of changing behavior at runtime.
 
-Endpoint providers can use `http_endpoint!` to declare each route once and
-generate both the Capability description and handler dispatch:
+Endpoint providers can put route attributes directly on handlers. The outer
+`#[endpoint]` attribute collects them at compile time and generates both the
+Capability description and handler dispatch:
 
 ```rust,ignore
 #[derive(Clone, Debug)]
 struct OrdersHttp;
 
+#[endpoint]
 impl OrdersHttp {
+    #[post("orders.create", "/orders")]
     async fn create(
         &self,
         context: InvocationContext,
@@ -73,13 +76,12 @@ impl OrdersHttp {
         // Authenticate, call the Orders Capability, and map its result to HTTP.
     }
 }
-
-http_endpoint! {
-    impl OrdersHttp {
-        "orders.create" => ("POST", "/orders") => create,
-    }
-}
 ```
+
+The supported method attributes are `get`, `post`, `put`, `patch`, `delete`,
+`head`, and `options`. Each handler declares its stable route ID and path.
+`http_endpoint!` remains available for existing providers and generated source
+that prefers one explicit route table.
 
 The macro rejects empty or malformed routes, duplicate route identifiers, and
 duplicate exact method/path pairs during compilation. Web Ingress still owns

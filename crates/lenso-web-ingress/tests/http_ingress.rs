@@ -20,7 +20,7 @@ use lenso_capability_http_endpoint::{
     Bytes as ContractBytes, CAPABILITY_ID, DESCRIBE_OPERATION, DESCRIPTOR_VERSION, DescribeRequest,
     DescribeResponse, DescribeResponseRoutesItem, EndpointDescribe, EndpointEndpoint,
     EndpointHandle, EndpointHandleInvocationError, EndpointProvider, HANDLE_OPERATION, HandleError,
-    HandleRequest, HandleResponse, HandleResponseHeadersItem, http_endpoint,
+    HandleRequest, HandleResponse, HandleResponseHeadersItem, endpoint,
 };
 use lenso_kernel::{
     InvocationContext, Kernel, NativeApp, NativeRequestFuture, RuntimeFailure, ShutdownOutcome,
@@ -747,7 +747,9 @@ struct SdkOrdersEndpoint {
     observed: Rc<RefCell<Option<HandleRequest>>>,
 }
 
+#[endpoint]
 impl SdkOrdersEndpoint {
+    #[get("sdk.orders.read", "/sdk/orders/{order_id}")]
     async fn read(
         &self,
         _context: InvocationContext,
@@ -769,12 +771,6 @@ impl SdkOrdersEndpoint {
             }],
             status: 200,
         })
-    }
-}
-
-http_endpoint! {
-    impl SdkOrdersEndpoint {
-        "sdk.orders.read" => ("GET", "/sdk/orders/{order_id}") => read,
     }
 }
 

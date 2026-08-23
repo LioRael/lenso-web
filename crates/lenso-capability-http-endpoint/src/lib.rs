@@ -15,6 +15,7 @@ mod generated {
 
 pub use authoring::{EndpointFuture, EndpointRoute, HttpEndpoint};
 pub use generated::*;
+pub use lenso_capability_http_endpoint_macros::endpoint;
 
 #[doc(hidden)]
 pub use authoring::{__private, validate_endpoint_routes};
