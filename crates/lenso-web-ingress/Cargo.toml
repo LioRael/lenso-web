@@ -1,6 +1,6 @@
 [package]
 name = "lenso-web-ingress"
-version = "0.3.2"
+version = "0.3.3"
 description = "General-purpose linked Rust HTTP Ingress Module for Lenso backends."
 edition.workspace = true
 license.workspace = true
@@ -15,7 +15,7 @@ http = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "http2", "server"] }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
-lenso-capability-http-endpoint = { version = "0.2.2", path = "../lenso-capability-http-endpoint" }
+lenso-capability-http-endpoint = { version = "0.2.3", path = "../lenso-capability-http-endpoint" }
 lenso-kernel = "0.1.4"
 lenso-native-adapter = "0.1.1"
 matchit = "0.8"

@@ -996,7 +996,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-capability-http-endpoint"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "futures",
  "http",
@@ -1011,7 +1011,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-capability-http-endpoint-macros"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1053,7 +1053,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-http-auth"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "lenso-auth-sdk",
  "lenso-capability-auth",
@@ -1130,7 +1130,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-web-ingress"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "axum",
  "bytes",
