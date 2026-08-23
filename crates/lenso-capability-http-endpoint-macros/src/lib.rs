@@ -1,9 +1,12 @@
 //! Attribute authoring for statically routed Lenso HTTP Endpoint providers.
 
 use proc_macro::TokenStream;
-use quote::quote;
+use quote::{ToTokens, quote};
+use serde_json::{Map, Number, Value};
 use syn::{
-    Attribute, Error, FnArg, Ident, ImplItem, ItemImpl, LitStr, Result, Token, Type,
+    Attribute, Error, FnArg, Ident, ImplItem, ItemImpl, Lit, LitStr, Result, Token, Type, braced,
+    bracketed,
+    ext::IdentExt,
     parse::{Parse, ParseStream},
     parse_macro_input,
     punctuated::Punctuated,
@@ -32,6 +35,19 @@ pub fn endpoint(arguments: TokenStream, input: TokenStream) -> TokenStream {
     expand_endpoint(implementation)
         .unwrap_or_else(Error::into_compile_error)
         .into()
+}
+
+/// Converts a JSON-like `OpenAPI` Operation Object into a validated string literal.
+///
+/// This is primarily useful with `lenso_capability_http_endpoint::http_endpoint!`.
+/// Handler attributes accept the same object directly through `#[openapi({ ... })]`.
+#[proc_macro]
+pub fn openapi_operation(input: TokenStream) -> TokenStream {
+    let operation = parse_macro_input!(input as OpenApiObject);
+    match operation_literal(&operation) {
+        Ok(operation) => quote!(#operation).into(),
+        Err(error) => error.into_compile_error().into(),
+    }
 }
 
 fn expand_endpoint(mut implementation: ItemImpl) -> Result<proc_macro2::TokenStream> {
@@ -184,8 +200,7 @@ fn take_handler_metadata(attributes: &mut Vec<Attribute>) -> Result<HandlerMetad
                     "an endpoint handler may declare only one OpenAPI Operation Object",
                 ));
             }
-            let operation = attribute.parse_args::<LitStr>()?;
-            validate_openapi_operation(&operation)?;
+            let operation = attribute.parse_args::<OpenApiOperation>()?.into_literal()?;
             openapi = Some(operation);
             continue;
         }
@@ -213,6 +228,161 @@ fn take_handler_metadata(attributes: &mut Vec<Attribute>) -> Result<HandlerMetad
         middlewares,
         openapi,
     })
+}
+
+enum OpenApiOperation {
+    Json(LitStr),
+    Object(OpenApiObject),
+}
+
+impl OpenApiOperation {
+    fn into_literal(self) -> Result<LitStr> {
+        match self {
+            Self::Json(operation) => {
+                validate_openapi_operation(&operation)?;
+                Ok(operation)
+            }
+            Self::Object(operation) => operation_literal(&operation),
+        }
+    }
+}
+
+impl Parse for OpenApiOperation {
+    fn parse(input: ParseStream<'_>) -> Result<Self> {
+        if input.peek(LitStr) {
+            return input.parse().map(Self::Json);
+        }
+        input.parse().map(Self::Object)
+    }
+}
+
+struct OpenApiObject {
+    value: Map<String, Value>,
+    span: proc_macro2::Span,
+}
+
+impl Parse for OpenApiObject {
+    fn parse(input: ParseStream<'_>) -> Result<Self> {
+        let content;
+        let brace = braced!(content in input);
+        Ok(Self {
+            value: parse_object_entries(&content)?,
+            span: brace.span.join(),
+        })
+    }
+}
+
+fn parse_object_entries(input: ParseStream<'_>) -> Result<Map<String, Value>> {
+    let mut object = Map::new();
+    while !input.is_empty() {
+        let (key, span) = parse_object_key(input)?;
+        input.parse::<Token![:]>()?;
+        let value = parse_json_value(input)?;
+        if object.insert(key.clone(), value).is_some() {
+            return Err(Error::new(
+                span,
+                format!("duplicate OpenAPI object key `{key}`"),
+            ));
+        }
+        if input.is_empty() {
+            break;
+        }
+        input.parse::<Token![,]>()?;
+    }
+    Ok(object)
+}
+
+fn parse_object_key(input: ParseStream<'_>) -> Result<(String, proc_macro2::Span)> {
+    if input.peek(LitStr) {
+        let key = input.parse::<LitStr>()?;
+        return Ok((key.value(), key.span()));
+    }
+    let key = Ident::parse_any(input)?;
+    Ok((key.unraw().to_string(), key.span()))
+}
+
+fn parse_json_value(input: ParseStream<'_>) -> Result<Value> {
+    if input.peek(syn::token::Brace) {
+        let content;
+        braced!(content in input);
+        return parse_object_entries(&content).map(Value::Object);
+    }
+    if input.peek(syn::token::Bracket) {
+        let content;
+        bracketed!(content in input);
+        let values = Punctuated::<JsonValue, Token![,]>::parse_terminated(&content)?;
+        return Ok(Value::Array(
+            values.into_iter().map(|value| value.0).collect(),
+        ));
+    }
+    if input.peek(Token![-]) {
+        input.parse::<Token![-]>()?;
+        let literal = input.parse::<Lit>()?;
+        return parse_number_literal(&literal, true);
+    }
+    if input.peek(syn::LitBool) {
+        let literal = input.parse::<Lit>()?;
+        return parse_literal(&literal);
+    }
+    if input.peek(Ident::peek_any) {
+        let ident = Ident::parse_any(input)?;
+        if ident == "null" {
+            return Ok(Value::Null);
+        }
+        return Err(Error::new(ident.span(), "expected a JSON value"));
+    }
+    let literal = input.parse::<Lit>()?;
+    parse_literal(&literal)
+}
+
+struct JsonValue(Value);
+
+impl Parse for JsonValue {
+    fn parse(input: ParseStream<'_>) -> Result<Self> {
+        parse_json_value(input).map(Self)
+    }
+}
+
+fn parse_literal(literal: &Lit) -> Result<Value> {
+    match literal {
+        Lit::Str(value) => Ok(Value::String(value.value())),
+        Lit::Bool(value) => Ok(Value::Bool(value.value)),
+        Lit::Int(_) | Lit::Float(_) => parse_number_literal(literal, false),
+        _ => Err(Error::new(
+            literal.span(),
+            "OpenAPI metadata supports JSON string, number, boolean, null, array, and object values",
+        )),
+    }
+}
+
+fn parse_number_literal(literal: &Lit, negative: bool) -> Result<Value> {
+    let mut source = literal.to_token_stream().to_string().replace(' ', "");
+    if negative {
+        source.insert(0, '-');
+    }
+    let number = source.parse::<Number>().map_err(|_| {
+        Error::new(
+            literal.span(),
+            "OpenAPI numeric values must be unsuffixed JSON numbers",
+        )
+    })?;
+    Ok(Value::Number(number))
+}
+
+fn operation_literal(operation: &OpenApiObject) -> Result<LitStr> {
+    if operation.value.contains_key("operationId") {
+        return Err(Error::new(
+            operation.span,
+            "OpenAPI operationId is generated from the stable route ID",
+        ));
+    }
+    let json = serde_json::to_string(&operation.value).map_err(|error| {
+        Error::new(
+            operation.span,
+            format!("could not encode OpenAPI Operation Object: {error}"),
+        )
+    })?;
+    Ok(LitStr::new(&json, operation.span))
 }
 
 fn validate_openapi_operation(operation: &LitStr) -> Result<()> {
@@ -434,7 +604,13 @@ mod tests {
         let expanded = expand_endpoint(parse_quote! {
             impl OrdersHttp {
                 #[get("orders.read", "/orders/{order_id}")]
-                #[openapi(r#"{"summary":"Read an order"}"#)]
+                #[openapi({
+                    summary: "Read an order",
+                    tags: ["orders"],
+                    responses: {
+                        "200": { description: "Order" }
+                    }
+                })]
                 async fn read(&self) {}
             }
         })
@@ -448,6 +624,55 @@ mod tests {
         assert!(expanded.contains("with_openapi"));
         assert!(!expanded.contains("# [get"));
         assert!(!expanded.contains("# [openapi"));
+        assert!(expanded.contains("Read an order"));
+        assert!(expanded.contains(r#"\"200\""#));
+    }
+
+    #[test]
+    fn accepts_legacy_json_string_metadata() {
+        let expanded = expand_endpoint(parse_quote! {
+            impl OrdersHttp {
+                #[get("orders.read", "/orders/{order_id}")]
+                #[openapi(r#"{"summary":"Read an order"}"#)]
+                async fn read(&self) {}
+            }
+        })
+        .unwrap()
+        .to_string();
+
+        assert!(expanded.contains("Read an order"));
+    }
+
+    #[test]
+    fn rejects_an_operation_id_in_structured_metadata() {
+        let error = expand_endpoint(parse_quote! {
+            impl OrdersHttp {
+                #[get("orders.read", "/orders/{order_id}")]
+                #[openapi({ operationId: "another.id" })]
+                async fn read(&self) {}
+            }
+        })
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("generated from the stable route ID")
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_structured_metadata_keys() {
+        let error = expand_endpoint(parse_quote! {
+            impl OrdersHttp {
+                #[get("orders.read", "/orders/{order_id}")]
+                #[openapi({ summary: "Read", summary: "Read again" })]
+                async fn read(&self) {}
+            }
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("duplicate OpenAPI object key"));
     }
 
     #[test]

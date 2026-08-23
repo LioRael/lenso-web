@@ -313,7 +313,7 @@ macro_rules! http_endpoint {
                 $route_id:literal => (
                     $method:literal,
                     $path:literal
-                    $(, openapi = $openapi:literal)?
+                    $(, openapi = $openapi:expr)?
                 ) => $handler:ident
             ),+ $(,)?
         }

@@ -38,7 +38,16 @@ impl OrdersHttp {
     }
 
     #[post("orders.create", "/orders")]
-    #[openapi(r#"{"summary":"Create an order","responses":{"201":{"description":"Created"}}}"#)]
+    #[openapi({
+        summary: "Create an order",
+        tags: ["orders"],
+        deprecated: false,
+        "x-display-order": -1,
+        "x-example": null,
+        responses: {
+            "201": { description: "Created" }
+        }
+    })]
     async fn create(
         &self,
         _context: InvocationContext,
@@ -108,6 +117,19 @@ fn handler_attributes_generate_description_and_dispatch() {
         description.routes[0].openapi.as_ref().unwrap()["summary"],
         "Create an order"
     );
+    assert_eq!(
+        description.routes[0].openapi.as_ref().unwrap()["tags"],
+        serde_json::json!(["orders"])
+    );
+    assert_eq!(
+        description.routes[0].openapi.as_ref().unwrap()["deprecated"],
+        false
+    );
+    assert_eq!(
+        description.routes[0].openapi.as_ref().unwrap()["x-display-order"],
+        -1
+    );
+    assert!(description.routes[0].openapi.as_ref().unwrap()["x-example"].is_null());
     assert_eq!(description.routes[1].route_id, "orders.read");
 
     let response = block_on(endpoint.handle(
