@@ -31,8 +31,4 @@ jobs:
           cargo check --locked -p lenso-capability-http-client -p lenso-capability-http-endpoint --target wasm32-unknown-unknown
           cargo check --locked -p lenso-capability-http-client -p lenso-capability-http-endpoint --target wasm32-wasip2
       - name: Package publishable crates
-        run: |
-          cargo package --locked -p lenso-capability-http-client
-          cargo package --locked -p lenso-capability-http-endpoint
-          cargo package --locked -p lenso-http-egress
-          cargo package --locked -p lenso-web-ingress
+        run: cargo package --locked --workspace
