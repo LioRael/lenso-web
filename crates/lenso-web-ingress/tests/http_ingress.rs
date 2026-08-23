@@ -24,7 +24,7 @@ use lenso_native_adapter::{
     NativeModuleFactory, NativeModuleFactoryContext, NativeModuleInstance, NativeModuleRegistry,
 };
 use lenso_runner::TokioDriver;
-use lenso_web_ingress::{PACKAGE_ID, WebIngressConfig, WebIngressFactory};
+use lenso_web_ingress::{PACKAGE_ID, PACKAGE_VERSION, WebIngressConfig, WebIngressFactory};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -544,7 +544,7 @@ fn project_with_optional_configuration(
     {
         project.packages_mut().insert(
             package.to_owned(),
-            PackageInput::new(package, PackageSource::Cargo, "0.1.0")
+            PackageInput::new(package, PackageSource::Cargo, PACKAGE_VERSION)
                 .with_package_name("lenso-web-ingress")
                 .with_manifest("crates/lenso-web-ingress/Cargo.toml")
                 .with_lockfile("Cargo.lock"),
@@ -630,7 +630,7 @@ impl NativeModuleFactory for SdkEndpointFactory {
     }
 
     fn package_version(&self) -> &'static str {
-        "0.1.0"
+        PACKAGE_VERSION
     }
 
     fn instantiate(
@@ -748,7 +748,7 @@ impl NativeModuleFactory for FixtureEndpointFactory {
     }
 
     fn package_version(&self) -> &'static str {
-        "0.1.0"
+        PACKAGE_VERSION
     }
 
     fn instantiate(
