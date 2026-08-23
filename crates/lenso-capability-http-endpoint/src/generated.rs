@@ -15,7 +15,129 @@ pub const HANDLE_OPERATION: &str = "handle";
 
 pub type Int64 = String;
 pub type Uint64 = String;
-pub type Bytes = String;
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Bytes(Vec<u8>);
+
+impl Bytes {
+    pub fn new(value: impl Into<Vec<u8>>) -> Self { Self(value.into()) }
+    pub fn as_slice(&self) -> &[u8] { &self.0 }
+    pub fn into_vec(self) -> Vec<u8> { self.0 }
+}
+
+impl From<Vec<u8>> for Bytes {
+    fn from(value: Vec<u8>) -> Self { Self(value) }
+}
+
+impl From<&[u8]> for Bytes {
+    fn from(value: &[u8]) -> Self { Self(value.to_vec()) }
+}
+
+impl From<Bytes> for Vec<u8> {
+    fn from(value: Bytes) -> Self { value.0 }
+}
+
+impl AsRef<[u8]> for Bytes {
+    fn as_ref(&self) -> &[u8] { self.as_slice() }
+}
+
+impl std::ops::Deref for Bytes {
+    type Target = [u8];
+    fn deref(&self) -> &Self::Target { self.as_slice() }
+}
+
+impl serde::Serialize for Bytes {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&encode_base64(self.as_slice()))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Bytes {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let encoded = <String as serde::Deserialize>::deserialize(deserializer)?;
+        decode_base64(&encoded).map(Self).map_err(serde::de::Error::custom)
+    }
+}
+
+fn encode_base64(input: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity((input.len() + 2) / 3 * 4);
+    let mut chunks = input.chunks_exact(3);
+    for chunk in &mut chunks {
+        output.push(ALPHABET[usize::from(chunk[0] >> 2)] as char);
+        output.push(ALPHABET[usize::from((chunk[0] & 0x03) << 4 | chunk[1] >> 4)] as char);
+        output.push(ALPHABET[usize::from((chunk[1] & 0x0f) << 2 | chunk[2] >> 6)] as char);
+        output.push(ALPHABET[usize::from(chunk[2] & 0x3f)] as char);
+    }
+    match chunks.remainder() {
+        [first] => {
+            output.push(ALPHABET[usize::from(first >> 2)] as char);
+            output.push(ALPHABET[usize::from((first & 0x03) << 4)] as char);
+            output.push('=');
+            output.push('=');
+        }
+        [first, second] => {
+            output.push(ALPHABET[usize::from(first >> 2)] as char);
+            output.push(ALPHABET[usize::from((first & 0x03) << 4 | second >> 4)] as char);
+            output.push(ALPHABET[usize::from((second & 0x0f) << 2)] as char);
+            output.push('=');
+        }
+        [] => {}
+        _ => unreachable!("chunks_exact remainder is shorter than three bytes"),
+    }
+    output
+}
+
+fn decode_base64(input: &str) -> Result<Vec<u8>, &'static str> {
+    let input = input.as_bytes();
+    if input.len() % 4 != 0 {
+        return Err("bytes must be canonical padded base64");
+    }
+    let mut output = Vec::with_capacity(input.len() / 4 * 3);
+    let chunk_count = input.len() / 4;
+    for (index, chunk) in input.chunks_exact(4).enumerate() {
+        let last = index + 1 == chunk_count;
+        let first = base64_digit(chunk[0]).ok_or("bytes contain an invalid base64 digit")?;
+        let second = base64_digit(chunk[1]).ok_or("bytes contain an invalid base64 digit")?;
+        output.push(first << 2 | second >> 4);
+        match (chunk[2], chunk[3]) {
+            (b'=', b'=') if last && second & 0x0f == 0 => {}
+            (third, b'=') if last => {
+                let third = base64_digit(third).ok_or("bytes contain an invalid base64 digit")?;
+                if third & 0x03 != 0 {
+                    return Err("bytes must be canonical padded base64");
+                }
+                output.push(second << 4 | third >> 2);
+            }
+            (third, fourth) if third != b'=' && fourth != b'=' => {
+                let third = base64_digit(third).ok_or("bytes contain an invalid base64 digit")?;
+                let fourth = base64_digit(fourth).ok_or("bytes contain an invalid base64 digit")?;
+                output.push(second << 4 | third >> 2);
+                output.push(third << 6 | fourth);
+            }
+            _ => return Err("bytes must be canonical padded base64"),
+        }
+    }
+    Ok(output)
+}
+
+fn base64_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
 pub type Timestamp = String;
 pub type Duration = String;
 pub type OptionalValue<T> = Option<Option<T>>;

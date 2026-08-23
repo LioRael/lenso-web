@@ -19,7 +19,7 @@ mod tests {
         assert_eq!(decode_describe_response(&wire).unwrap(), description);
 
         let request = HandleRequest {
-            body: "AAEC".to_owned(),
+            body: Bytes::from(vec![0, 1, 2]),
             credential: Some(HandleRequestCredential {
                 scheme: "bearer".to_owned(),
                 value: "token".to_owned(),
@@ -39,6 +39,7 @@ mod tests {
             route_id: "orders.read".to_owned(),
         };
         let wire = encode_handle_request(&request).unwrap();
+        assert!(wire.contains(r#""body":"AAEC""#));
         assert_eq!(decode_handle_request(&wire).unwrap(), request);
     }
 }

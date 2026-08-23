@@ -1,5 +1,6 @@
 use std::{
     collections::HashSet,
+    panic::AssertUnwindSafe,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -20,13 +21,12 @@ use axum::{
     middleware::{self, Next},
     response::{IntoResponse, Response},
 };
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use futures::{FutureExt as _, StreamExt as _, stream::FuturesUnordered};
 use lenso_capability_http_endpoint::HandleResponse;
 use lenso_kernel::CancellationToken;
 use tokio::{
     net::TcpListener,
     sync::{mpsc, oneshot, watch},
-    task::JoinSet,
 };
 use tower::{ServiceBuilder, limit::GlobalConcurrencyLimitLayer};
 use tower_http::{
@@ -55,10 +55,10 @@ pub(super) struct InboundHeader {
 
 #[derive(Debug)]
 pub(super) struct InboundRequest {
-    pub(super) body: String,
+    pub(super) body: Bytes,
     pub(super) credential: Option<CredentialEvidence>,
     pub(super) headers: Vec<InboundHeader>,
-    pub(super) method: String,
+    pub(super) method: Method,
     pub(super) path: String,
     pub(super) query: Option<String>,
     pub(super) request_id: String,
@@ -88,10 +88,25 @@ struct MakeIngressRequestId {
 impl MakeRequestId for MakeIngressRequestId {
     fn make_request_id<B>(&mut self, _request: &Request<B>) -> Option<RequestId> {
         let value = self.next.fetch_add(1, Ordering::Relaxed);
-        let value = HeaderValue::from_str(&format!("lenso-{value}"))
-            .expect("generated request id is a valid header value");
+        let value = request_id_header_value(value);
         Some(RequestId::new(value))
     }
+}
+
+fn request_id_header_value(mut value: u64) -> HeaderValue {
+    let mut buffer = [0_u8; 26];
+    let mut start = buffer.len();
+    loop {
+        start -= 1;
+        buffer[start] = b'0' + (value % 10) as u8;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    start -= b"lenso-".len();
+    buffer[start..start + b"lenso-".len()].copy_from_slice(b"lenso-");
+    HeaderValue::from_bytes(&buffer[start..]).expect("generated request id is a valid header value")
 }
 
 #[derive(Debug)]
@@ -202,7 +217,7 @@ async fn dispatch_requests(
     mut receiver: mpsc::Receiver<IngressCall>,
     routes: std::rc::Rc<RouteTable>,
 ) {
-    let mut calls = JoinSet::new();
+    let mut calls = FuturesUnordered::new();
     let mut accepting = true;
     loop {
         tokio::select! {
@@ -210,12 +225,12 @@ async fn dispatch_requests(
                 match call {
                     Some(call) => {
                         let routes = routes.clone();
-                        calls.spawn_local(async move { dispatch_request(call, routes).await });
+                        calls.push(AssertUnwindSafe(dispatch_request(call, routes)).catch_unwind());
                     }
                     None => accepting = false,
                 }
             }
-            Some(_) = calls.join_next(), if !calls.is_empty() => {}
+            Some(_) = calls.next(), if !calls.is_empty() => {}
             else => break,
         }
     }
@@ -250,7 +265,9 @@ fn connection_owned_headers(headers: &HeaderMap) -> Result<HashSet<HeaderName>, 
         {
             let name = HeaderName::from_bytes(name.as_bytes())
                 .map_err(|_| RequestRejection::BadRequest)?;
-            owned.insert(name);
+            if !is_static_hop_by_hop_header(&name) {
+                owned.insert(name);
+            }
         }
     }
     Ok(owned)
@@ -305,14 +322,27 @@ fn inbound_request(
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(InboundRequest {
-        body: STANDARD.encode(body),
+        body,
         credential,
         headers,
-        method: method.as_str().to_owned(),
+        method: normalized_method(method),
         path: uri.path().to_owned(),
         query: uri.query().map(ToOwned::to_owned),
         request_id,
     })
+}
+
+fn normalized_method(method: &Method) -> Method {
+    if method
+        .as_str()
+        .bytes()
+        .any(|byte| byte.is_ascii_lowercase())
+    {
+        let uppercase = method.as_str().to_ascii_uppercase();
+        Method::from_bytes(uppercase.as_bytes()).expect("an existing HTTP method remains valid")
+    } else {
+        method.clone()
+    }
 }
 
 fn from_endpoint(response: HandleResponse) -> IngressResponse {
@@ -322,9 +352,7 @@ fn from_endpoint(response: HandleResponse) -> IngressResponse {
     else {
         return invalid_endpoint_response();
     };
-    let Ok(body) = STANDARD.decode(response.body) else {
-        return invalid_endpoint_response();
-    };
+    let body = response.body.into_vec();
     let mut headers = HeaderMap::new();
     for header in response.headers {
         let Ok(name) = HeaderName::from_bytes(header.name.as_bytes()) else {
@@ -351,7 +379,7 @@ async fn enforce_head_limit(
     next: Next,
 ) -> Response {
     let size = request.method().as_str().len()
-        + request.uri().to_string().len()
+        + serialized_uri_len(request.uri())
         + request
             .headers()
             .iter()
@@ -365,6 +393,19 @@ async fn enforce_head_limit(
         .into_response();
     }
     next.run(request).await
+}
+
+fn serialized_uri_len(uri: &Uri) -> usize {
+    let mut size = uri
+        .path_and_query()
+        .map_or(0, |path_and_query| path_and_query.as_str().len());
+    if let Some(scheme) = uri.scheme_str() {
+        size += scheme.len() + 3;
+    }
+    if let Some(authority) = uri.authority() {
+        size += authority.as_str().len();
+    }
+    size
 }
 
 fn request_id(headers: &HeaderMap) -> Result<String, RequestRejection> {
@@ -415,4 +456,31 @@ fn invalid_endpoint_response() -> IngressResponse {
         StatusCode::BAD_GATEWAY,
         r#"{"error":"invalid_endpoint_response"}"#,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{request_id_header_value, serialized_uri_len};
+    use axum::http::Uri;
+
+    #[test]
+    fn request_id_header_values_cover_the_full_counter_range() {
+        assert_eq!(request_id_header_value(0), "lenso-0");
+        assert_eq!(
+            request_id_header_value(u64::MAX),
+            "lenso-18446744073709551615"
+        );
+    }
+
+    #[test]
+    fn uri_length_matches_http_uri_serialization() {
+        for uri in [
+            "/orders/42?include=items",
+            "http://example.com/orders/42?include=items",
+            "*",
+        ] {
+            let uri = uri.parse::<Uri>().expect("fixture URI");
+            assert_eq!(serialized_uri_len(&uri), uri.to_string().len());
+        }
+    }
 }
