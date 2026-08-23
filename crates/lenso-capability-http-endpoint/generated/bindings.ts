@@ -2,7 +2,7 @@
 import * as lensoContractRuntime from "@lenso/contract-runtime";
 
 export const CAPABILITY_ID = "lenso.http.endpoint@1";
-export const DESCRIPTOR_VERSION = "1.0.1";
+export const DESCRIPTOR_VERSION = "1.1.0";
 export const PORTABLE = true;
 export const CROSS_LANE_TRANSFER = true;
 
@@ -28,6 +28,7 @@ export interface DescribeResponse {
 
 export interface DescribeResponseRoutesItem {
   method: string;
+  openapi?: Record<string, unknown>;
   path: string;
   route_id: string;
 }

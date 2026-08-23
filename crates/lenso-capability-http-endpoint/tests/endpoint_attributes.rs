@@ -38,6 +38,7 @@ impl OrdersHttp {
     }
 
     #[post("orders.create", "/orders")]
+    #[openapi(r#"{"summary":"Create an order","responses":{"201":{"description":"Created"}}}"#)]
     async fn create(
         &self,
         _context: InvocationContext,
@@ -103,6 +104,10 @@ fn handler_attributes_generate_description_and_dispatch() {
     assert_eq!(description.routes[0].route_id, "orders.create");
     assert_eq!(description.routes[0].method, "POST");
     assert_eq!(description.routes[0].path, "/orders");
+    assert_eq!(
+        description.routes[0].openapi.as_ref().unwrap()["summary"],
+        "Create an order"
+    );
     assert_eq!(description.routes[1].route_id, "orders.read");
 
     let response = block_on(endpoint.handle(

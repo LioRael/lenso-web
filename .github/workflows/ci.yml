@@ -33,18 +33,13 @@ jobs:
       - name: Package Capability crates
         run: |
           cargo package --locked -p lenso-capability-http-client
-          # Package the new macro and its Endpoint consumer together so Cargo
-          # can resolve the same-release dependency before its first publish.
+          # Package the Endpoint release set together so Cargo can resolve
+          # same-release dependencies before their first publication.
           cargo package --locked --no-verify \
             -p lenso-capability-http-endpoint-macros \
-            -p lenso-capability-http-endpoint
-      - name: Package Capability consumers
-        if: ${{ !contains(github.event.pull_request.labels.*.name, 'release') }}
-        # Cargo verifies path dependencies against crates.io, where the new Capability ABI does
-        # not exist until the dependency-ordered release. The workspace gates above compile,
-        # test, and lint these consumers against the exact local Capability sources. Release PRs
-        # skip archive preparation until those Capability versions exist in the registry.
-        run: |
-          cargo package --locked --no-verify -p lenso-http-auth
-          cargo package --locked --no-verify -p lenso-http-egress
-          cargo package --locked --no-verify -p lenso-web-ingress
+            -p lenso-capability-http-endpoint \
+            -p lenso-http-auth \
+            -p lenso-openapi \
+            -p lenso-web-ingress
+      - name: Package HTTP Egress
+        run: cargo package --locked --no-verify -p lenso-http-egress

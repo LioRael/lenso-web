@@ -11,7 +11,11 @@
         "properties": {
           "route_id": {"type": "string", "minLength": 1},
           "method": {"type": "string", "minLength": 1, "maxLength": 32},
-          "path": {"type": "string", "pattern": "^/"}
+          "path": {"type": "string", "pattern": "^/"},
+          "openapi": {
+            "type": "object",
+            "additionalProperties": true
+          }
         },
         "additionalProperties": false
       }

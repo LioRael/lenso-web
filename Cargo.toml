@@ -7,6 +7,7 @@ members = [
     "crates/lenso-http-egress",
     "crates/lenso-http-auth",
     "crates/lenso-web-ingress",
+    "crates/lenso-openapi",
 ]
 
 [workspace.package]

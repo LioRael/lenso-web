@@ -32,6 +32,10 @@ mod tests {
         let description = DescribeResponse {
             routes: vec![DescribeResponseRoutesItem {
                 method: "GET".to_owned(),
+                openapi: Some(std::collections::BTreeMap::from([(
+                    "summary".to_owned(),
+                    serde_json::json!("Read an order"),
+                )])),
                 path: "/orders/{order_id}".to_owned(),
                 route_id: "orders.read".to_owned(),
             }],

@@ -679,6 +679,7 @@ impl FixtureEndpointFactory {
                     .into_iter()
                     .map(|size| DescribeResponseRoutesItem {
                         method: "POST".to_owned(),
+                        openapi: None,
                         path: format!("/bench/{size}"),
                         route_id: size.to_string(),
                     })

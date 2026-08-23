@@ -56,7 +56,8 @@ fn expand_endpoint(mut implementation: ItemImpl) -> Result<proc_macro2::TokenStr
             continue;
         };
         let metadata = take_handler_metadata(&mut method.attrs)?;
-        if let Some(route) = metadata.route {
+        if let Some(mut route) = metadata.route {
+            route.openapi = metadata.openapi;
             routes.push(Handler {
                 route,
                 middlewares: provider_middlewares
@@ -67,10 +68,10 @@ fn expand_endpoint(mut implementation: ItemImpl) -> Result<proc_macro2::TokenStr
                 method: method.sig.ident.clone(),
                 arguments: handler_arguments(method)?,
             });
-        } else if !metadata.middlewares.is_empty() {
+        } else if !metadata.middlewares.is_empty() || metadata.openapi.is_some() {
             return Err(Error::new_spanned(
                 &method.sig.ident,
-                "endpoint middleware can only be attached to an HTTP handler",
+                "endpoint metadata can only be attached to an HTTP handler",
             ));
         }
     }
@@ -81,30 +82,8 @@ fn expand_endpoint(mut implementation: ItemImpl) -> Result<proc_macro2::TokenStr
         ));
     }
 
-    let const_routes = routes.iter().map(|handler| {
-        let route_id = &handler.route.id;
-        let method = &handler.route.method;
-        let path = &handler.route.path;
-        quote! {
-            ::lenso_capability_http_endpoint::EndpointRoute::new(
-                #route_id,
-                #method,
-                #path,
-            ),
-        }
-    });
-    let implementation_routes = routes.iter().map(|handler| {
-        let route_id = &handler.route.id;
-        let method = &handler.route.method;
-        let path = &handler.route.path;
-        quote! {
-            ::lenso_capability_http_endpoint::EndpointRoute::new(
-                #route_id,
-                #method,
-                #path,
-            ),
-        }
-    });
+    let const_routes = routes.iter().map(endpoint_route);
+    let implementation_routes = routes.iter().map(endpoint_route);
     let dispatch_arms = routes.iter().map(dispatch_arm);
 
     Ok(quote! {
@@ -140,6 +119,24 @@ fn expand_endpoint(mut implementation: ItemImpl) -> Result<proc_macro2::TokenStr
     })
 }
 
+fn endpoint_route(handler: &Handler) -> proc_macro2::TokenStream {
+    let route_id = &handler.route.id;
+    let method = &handler.route.method;
+    let path = &handler.route.path;
+    let openapi = handler
+        .route
+        .openapi
+        .as_ref()
+        .map(|operation| quote!(.with_openapi(#operation)));
+    quote! {
+        ::lenso_capability_http_endpoint::EndpointRoute::new(
+            #route_id,
+            #method,
+            #path,
+        ) #openapi,
+    }
+}
+
 fn take_provider_middlewares(attributes: &mut Vec<Attribute>) -> Result<Vec<Ident>> {
     let mut middlewares = Vec::new();
     let mut retained = Vec::with_capacity(attributes.len());
@@ -165,6 +162,7 @@ fn take_provider_middlewares(attributes: &mut Vec<Attribute>) -> Result<Vec<Iden
 fn take_handler_metadata(attributes: &mut Vec<Attribute>) -> Result<HandlerMetadata> {
     let mut route = None;
     let mut middlewares = Vec::new();
+    let mut openapi = None;
     let mut retained = Vec::with_capacity(attributes.len());
     for attribute in attributes.drain(..) {
         if attribute.path().is_ident("middleware") {
@@ -177,6 +175,18 @@ fn take_handler_metadata(attributes: &mut Vec<Attribute>) -> Result<HandlerMetad
                 ));
             }
             middlewares.extend(arguments);
+            continue;
+        }
+        if attribute.path().is_ident("openapi") {
+            if openapi.is_some() {
+                return Err(Error::new_spanned(
+                    attribute,
+                    "an endpoint handler may declare only one OpenAPI Operation Object",
+                ));
+            }
+            let operation = attribute.parse_args::<LitStr>()?;
+            validate_openapi_operation(&operation)?;
+            openapi = Some(operation);
             continue;
         }
         let Some(http_method) = http_method(&attribute) else {
@@ -194,10 +204,37 @@ fn take_handler_metadata(attributes: &mut Vec<Attribute>) -> Result<HandlerMetad
             method: LitStr::new(http_method, attribute.path().span()),
             id: arguments.route_id,
             path: arguments.path,
+            openapi: None,
         });
     }
     *attributes = retained;
-    Ok(HandlerMetadata { route, middlewares })
+    Ok(HandlerMetadata {
+        route,
+        middlewares,
+        openapi,
+    })
+}
+
+fn validate_openapi_operation(operation: &LitStr) -> Result<()> {
+    let value = serde_json::from_str::<serde_json::Value>(&operation.value()).map_err(|error| {
+        Error::new(
+            operation.span(),
+            format!("OpenAPI Operation Object is not valid JSON: {error}"),
+        )
+    })?;
+    let Some(object) = value.as_object() else {
+        return Err(Error::new(
+            operation.span(),
+            "OpenAPI operation metadata must be a JSON object",
+        ));
+    };
+    if object.contains_key("operationId") {
+        return Err(Error::new(
+            operation.span(),
+            "OpenAPI operationId is generated from the stable route ID",
+        ));
+    }
+    Ok(())
 }
 
 fn handler_arguments(method: &syn::ImplItemFn) -> Result<Vec<HandlerArgument>> {
@@ -360,11 +397,13 @@ struct Route {
     method: LitStr,
     id: LitStr,
     path: LitStr,
+    openapi: Option<LitStr>,
 }
 
 struct HandlerMetadata {
     route: Option<Route>,
     middlewares: Vec<Ident>,
+    openapi: Option<LitStr>,
 }
 
 struct Handler {
@@ -395,6 +434,7 @@ mod tests {
         let expanded = expand_endpoint(parse_quote! {
             impl OrdersHttp {
                 #[get("orders.read", "/orders/{order_id}")]
+                #[openapi(r#"{"summary":"Read an order"}"#)]
                 async fn read(&self) {}
             }
         })
@@ -405,7 +445,41 @@ mod tests {
         assert!(expanded.contains("orders.read"));
         assert!(expanded.contains("GET"));
         assert!(expanded.contains("/orders/{order_id}"));
+        assert!(expanded.contains("with_openapi"));
         assert!(!expanded.contains("# [get"));
+        assert!(!expanded.contains("# [openapi"));
+    }
+
+    #[test]
+    fn rejects_an_openapi_operation_id_that_can_drift_from_the_route_id() {
+        let error = expand_endpoint(parse_quote! {
+            impl OrdersHttp {
+                #[get("orders.read", "/orders/{order_id}")]
+                #[openapi(r#"{"operationId":"another.id"}"#)]
+                async fn read(&self) {}
+            }
+        })
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("generated from the stable route ID")
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_openapi_json() {
+        let error = expand_endpoint(parse_quote! {
+            impl OrdersHttp {
+                #[get("orders.read", "/orders/{order_id}")]
+                #[openapi("not-json")]
+                async fn read(&self) {}
+            }
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("not valid JSON"));
     }
 
     #[test]

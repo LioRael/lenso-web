@@ -1,6 +1,6 @@
 [package]
 name = "lenso-capability-http-endpoint"
-version = "0.2.2"
+version = "0.3.0"
 description = "Portable HTTP Endpoint Capability contract for Lenso backend Modules."
 edition.workspace = true
 license.workspace = true
@@ -12,7 +12,7 @@ build = "build.rs"
 [dependencies]
 futures.workspace = true
 http.workspace = true
-lenso-capability-http-endpoint-macros = { path = "../lenso-capability-http-endpoint-macros", version = "0.1.1" }
+lenso-capability-http-endpoint-macros = { path = "../lenso-capability-http-endpoint-macros", version = "0.2.0" }
 lenso-contract-runtime = "0.1.0"
 lenso-kernel = "0.1.4"
 serde.workspace = true

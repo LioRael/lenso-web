@@ -21,6 +21,7 @@ route registry.
 - `lenso-capability-http-client`
 - `lenso-http-auth`
 - `lenso-http-egress`
+- `lenso-openapi`
 - `lenso-web-ingress`
 
 The Capability crates include generated TypeScript bindings. Those bindings
@@ -188,6 +189,76 @@ The SDK is additive: existing providers that implement `EndpointProvider`
 directly continue to work through the same immutable activation and dispatch
 path.
 
+## Optional OpenAPI 3.1 documents
+
+OpenAPI is an opt-in Module, not an Ingress mode. Linking `lenso-openapi` does
+not add a route or change an App. App Composition enables it by selecting one
+`lenso.openapi` Instance, binding the Endpoint providers to document to that
+Instance, and binding the Instance's own HTTP Endpoint to Web Ingress. Removing
+that package selection, Instance, and those bindings removes the document
+without changing the business Endpoints.
+
+Endpoint authors may attach an OpenAPI 3.1 Operation Object while retaining the
+stable route declaration as the source of `operationId`, method, and path:
+
+```rust,ignore
+#[endpoint]
+impl OrdersHttp {
+    #[get("orders.read", "/orders/{order_id}")]
+    #[openapi(
+        r#"{
+          "summary": "Read an order",
+          "responses": {
+            "200": {
+              "description": "Order",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "required": ["id"],
+                    "properties": {"id": {"type": "string"}}
+                  }
+                }
+              }
+            }
+          }
+        }"#
+    )]
+    async fn read(&self) -> Result<HandleResponse, EndpointHandleInvocationError> {
+        // ...
+    }
+}
+```
+
+`http_endpoint!` accepts the same object as `openapi = r#"{...}"#` in its route
+tuple. The authoring macro validates JSON and rejects a separately declared
+`operationId`. A route without metadata remains valid and receives an
+`Undocumented response.` fallback only when an OpenAPI document is assembled.
+
+The selected `lenso.openapi` Instance uses immutable configuration validated by
+`crates/lenso-openapi/config.schema.json`:
+
+```json
+{
+  "title": "Orders API",
+  "version": "1.0.0",
+  "description": "Public order operations",
+  "document_path": "/openapi.json",
+  "servers": [{"url": "https://api.example.com"}],
+  "components": {
+    "securitySchemes": {
+      "bearer": {"type": "http", "scheme": "bearer"}
+    }
+  }
+}
+```
+
+The Module never infers a public server address from its listener and never
+discovers Endpoint providers globally. Only providers explicitly bound to its
+`many lenso.http.endpoint@1` requirement appear in the document. Swagger UI,
+Redoc, pages, assets, and navigation remain with the application or Console UI
+owner rather than this repository.
+
 Ingress-owned failures have stable JSON codes. Missing routes return `404`,
 method mismatches return `405` with `Allow`, malformed evidence returns `400`,
 body/head limits return `413`/`431`, invalid or rejected Endpoint responses
@@ -284,7 +355,7 @@ cargo test --locked --workspace
 cargo clippy --locked --workspace --all-targets -- -D warnings
 ```
 
-Release-plz opens release PRs from `main` and publishes the four crates through
+Release-plz opens release PRs from `main` and publishes the public crates through
 the configured crates.io Trusted Publishers and GitHub OIDC. Dependency-aware
 publication releases the Capability crates before the dependent
 `lenso-web-ingress` and `lenso-http-egress` Modules, and workspace CI fully
