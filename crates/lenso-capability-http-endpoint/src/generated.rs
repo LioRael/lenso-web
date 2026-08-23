@@ -4,7 +4,7 @@ use futures::future::LocalBoxFuture;
 use lenso_kernel::{InvocationContext, ModuleDependencies, NativeRequestEndpoint, NativeRequestFuture, NativeRequestHandle, RequestCapability, RuntimeFailure};
 
 pub const CAPABILITY_ID: &str = "lenso.http.endpoint@1";
-pub const DESCRIPTOR_VERSION: &str = "1.0.1";
+pub const DESCRIPTOR_VERSION: &str = "1.1.0";
 pub const PORTABLE: bool = true;
 pub const CROSS_LANE_TRANSFER: bool = true;
 pub const ENDPOINT_CAPABILITY_ID: &str = CAPABILITY_ID;
@@ -33,6 +33,9 @@ pub struct DescribeResponseRoutesItem {
     #[serde(rename = "method")]
     #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
     pub method: String,
+    #[serde(rename = "openapi")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub openapi: Option<std::collections::BTreeMap<String, serde_json::Value>>,
     #[serde(rename = "path")]
     #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
     pub path: String,

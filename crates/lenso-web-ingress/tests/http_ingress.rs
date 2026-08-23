@@ -945,6 +945,7 @@ impl FixtureEndpointFactory {
                     .into_iter()
                     .map(|(route_id, method, path)| DescribeResponseRoutesItem {
                         method: method.to_owned(),
+                        openapi: None,
                         path: path.to_owned(),
                         route_id: route_id.to_owned(),
                     })

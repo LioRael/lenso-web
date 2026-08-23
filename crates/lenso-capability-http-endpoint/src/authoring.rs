@@ -48,6 +48,7 @@ pub struct EndpointRoute {
     route_id: &'static str,
     method: &'static str,
     path: &'static str,
+    openapi: Option<&'static str>,
 }
 
 impl EndpointRoute {
@@ -58,7 +59,19 @@ impl EndpointRoute {
             route_id,
             method,
             path,
+            openapi: None,
         }
+    }
+
+    /// Adds an `OpenAPI` 3.1 Operation Object to this route.
+    ///
+    /// The route ID remains authoritative for `operationId`; the document must not
+    /// declare its own `operationId`. The optional `OpenAPI` Module validates and
+    /// assembles this object only when the App explicitly selects and binds it.
+    #[must_use]
+    pub const fn with_openapi(mut self, operation: &'static str) -> Self {
+        self.openapi = Some(operation);
+        self
     }
 
     /// Returns the stable identifier dispatched to the owning handler.
@@ -79,12 +92,18 @@ impl EndpointRoute {
         self.path
     }
 
-    fn into_description(self) -> DescribeResponseRoutesItem {
-        DescribeResponseRoutesItem {
+    fn into_description(self) -> Result<DescribeResponseRoutesItem, crate::DescribeError> {
+        let openapi = self
+            .openapi
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(|_| crate::DescribeError::InvalidConfiguration)?;
+        Ok(DescribeResponseRoutesItem {
             method: self.method.to_owned(),
+            openapi,
             path: self.path.to_owned(),
             route_id: self.route_id.to_owned(),
-        }
+        })
     }
 }
 
@@ -117,8 +136,8 @@ where
             .iter()
             .copied()
             .map(EndpointRoute::into_description)
-            .collect();
-        Box::pin(async move { Ok(Ok(DescribeResponse { routes })) })
+            .collect::<Result<Vec<_>, _>>();
+        Box::pin(async move { Ok(routes.map(|routes| DescribeResponse { routes })) })
     }
 
     fn handle(
@@ -291,14 +310,19 @@ macro_rules! http_endpoint {
     (
         impl $provider:ty {
             $(
-                $route_id:literal => ($method:literal, $path:literal) => $handler:ident
+                $route_id:literal => (
+                    $method:literal,
+                    $path:literal
+                    $(, openapi = $openapi:literal)?
+                ) => $handler:ident
             ),+ $(,)?
         }
     ) => {
         const _: () = {
             const ROUTES: &[$crate::EndpointRoute] = &[
                 $(
-                    $crate::EndpointRoute::new($route_id, $method, $path),
+                    $crate::EndpointRoute::new($route_id, $method, $path)
+                        $(.with_openapi($openapi))?,
                 )+
             ];
             $crate::validate_endpoint_routes(ROUTES);
@@ -307,7 +331,8 @@ macro_rules! http_endpoint {
         impl $crate::HttpEndpoint for $provider {
             const ROUTES: &'static [$crate::EndpointRoute] = &[
                 $(
-                    $crate::EndpointRoute::new($route_id, $method, $path),
+                    $crate::EndpointRoute::new($route_id, $method, $path)
+                        $(.with_openapi($openapi))?,
                 )+
             ];
 
