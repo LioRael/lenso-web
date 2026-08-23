@@ -281,7 +281,6 @@ mod tests {
     use std::time::Duration;
 
     use axum::{Router, routing::get};
-    use lenso_capability_http_client::ClientProvider as _;
     use lenso_kernel::CancellationToken;
     use reqwest::redirect::Policy;
     use tokio::net::TcpListener;

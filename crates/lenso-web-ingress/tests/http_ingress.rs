@@ -33,6 +33,7 @@ const ORDERS_PACKAGE_ID: &str = "fixture.orders-http";
 const STATUS_PACKAGE_ID: &str = "fixture.status-http";
 
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::too_many_lines)]
 async fn routes_bound_backend_modules_and_preserves_http_evidence() {
     LocalSet::new()
         .run_until(async {
@@ -484,9 +485,7 @@ impl EndpointProvider for FixtureEndpoint {
         _context: InvocationContext,
         request: HandleRequest,
     ) -> LocalBoxFuture<'static, Result<HandleResponse, EndpointHandleInvocationError>> {
-        if request.route_id == "orders.panic" {
-            panic!("fixture endpoint panic");
-        }
+        assert_ne!(request.route_id, "orders.panic", "fixture endpoint panic");
         self.observed.borrow_mut().replace(request.clone());
         let package_id = self.package_id;
         let active_calls = self.active_calls.clone();

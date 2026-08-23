@@ -106,7 +106,9 @@ async fn report(
     }
     let mut rates = samples
         .into_iter()
-        .map(|seconds| requests as f64 / seconds)
+        .map(|seconds| {
+            f64::from(u32::try_from(requests).expect("benchmark request count fits u32")) / seconds
+        })
         .collect::<Vec<_>>();
     rates.sort_by(f64::total_cmp);
     let rendered = rates
