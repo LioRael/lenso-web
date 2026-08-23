@@ -2,8 +2,45 @@ use lenso_kernel::{InvocationContext, NativeRequestFuture};
 
 use crate::{
     DescribeRequest, DescribeResponse, DescribeResponseRoutesItem, EndpointDescribe,
-    EndpointHandle, EndpointProvider, HandleRequest,
+    EndpointHandle, EndpointProvider, HandleRequest, HandleResponse,
 };
+
+/// The result of one Endpoint-owned middleware step.
+#[derive(Clone, Debug)]
+pub struct MiddlewareOutcome {
+    next: Option<(InvocationContext, HandleRequest)>,
+    response: Option<HandleResponse>,
+}
+
+impl MiddlewareOutcome {
+    /// Continues the middleware chain.
+    #[must_use]
+    pub fn next(context: InvocationContext, request: HandleRequest) -> Self {
+        Self {
+            next: Some((context, request)),
+            response: None,
+        }
+    }
+
+    /// Stops the middleware chain with an intentional response.
+    #[must_use]
+    pub fn response(response: HandleResponse) -> Self {
+        Self {
+            next: None,
+            response: Some(response),
+        }
+    }
+
+    /// Splits an outcome for generated middleware dispatch.
+    #[doc(hidden)]
+    pub fn into_result(self) -> Result<(InvocationContext, HandleRequest), HandleResponse> {
+        match (self.next, self.response) {
+            (Some(next), None) => Ok(next),
+            (None, Some(response)) => Err(response),
+            _ => unreachable!("middleware outcome constructors preserve the invariant"),
+        }
+    }
+}
 
 /// One immutable HTTP route owned by an Endpoint provider.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -305,6 +342,9 @@ macro_rules! http_endpoint {
 #[doc(hidden)]
 pub mod __private {
     pub use lenso_kernel::InvocationContext;
+
+    pub use super::validate_endpoint_routes;
+    pub use crate::{ExtractorRejection, FromRequest, MiddlewareOutcome};
 }
 
 #[cfg(test)]

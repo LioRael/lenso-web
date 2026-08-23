@@ -11,11 +11,13 @@ build = "build.rs"
 
 [dependencies]
 futures.workspace = true
+http.workspace = true
 lenso-capability-http-endpoint-macros = { path = "../lenso-capability-http-endpoint-macros", version = "0.1.0" }
 lenso-contract-runtime = "0.1.0"
 lenso-kernel = "0.1.4"
 serde.workspace = true
 serde_json.workspace = true
+serde_urlencoded.workspace = true
 
 [build-dependencies]
 lenso-contract-codegen = "0.5.0"

@@ -236,6 +236,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "deranged"
+version = "0.5.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -243,6 +249,7 @@ checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
  "block-buffer",
  "crypto-common",
+ "subtle",
 ]
 
 [[package]]
@@ -466,6 +473,15 @@ name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+
+[[package]]
+name = "hmac"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
+dependencies = [
+ "digest",
+]
 
 [[package]]
 name = "http"
@@ -905,6 +921,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "lenso-auth-sdk"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "170637bcf83d9841f6590108b320d1f00276b59a0f304ac832553ed513a73ee0"
+dependencies = [
+ "base64",
+ "hmac",
+ "lenso-capability-auth",
+ "lenso-kernel",
+ "serde",
+ "serde_json",
+ "sha2",
+ "time",
+]
+
+[[package]]
 name = "lenso-authoring"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -912,7 +944,7 @@ checksum = "caea4b1fbd156216d1e3e7d923db3e94e590b48b0493ed6d75a4ef593aece7aa"
 dependencies = [
  "lenso-app-plan",
  "lenso-bun-adapter",
- "lenso-contract-codegen",
+ "lenso-contract-codegen 0.5.0",
  "lenso-kernel",
  "lenso-runner",
  "serde",
@@ -938,11 +970,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "lenso-capability-auth"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6440c360d65292ad23c6e6396c8df827a807d6a934de1ca2edad1df37b02acd8"
+dependencies = [
+ "futures",
+ "lenso-contract-codegen 0.1.0",
+ "lenso-kernel",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "lenso-capability-http-client"
 version = "0.2.1"
 dependencies = [
  "futures",
- "lenso-contract-codegen",
+ "lenso-contract-codegen 0.5.0",
  "lenso-contract-runtime",
  "lenso-kernel",
  "serde",
@@ -954,12 +999,14 @@ name = "lenso-capability-http-endpoint"
 version = "0.2.1"
 dependencies = [
  "futures",
+ "http",
  "lenso-capability-http-endpoint-macros",
- "lenso-contract-codegen",
+ "lenso-contract-codegen 0.5.0",
  "lenso-contract-runtime",
  "lenso-kernel",
  "serde",
  "serde_json",
+ "serde_urlencoded",
 ]
 
 [[package]]
@@ -969,6 +1016,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "lenso-contract-codegen"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71aa6b7c5c4dc62b2883b10296e1b47bcff437d3cc655a4c8d7d4f21ff9acf8e"
+dependencies = [
+ "semver",
+ "serde_json",
 ]
 
 [[package]]
@@ -991,6 +1048,16 @@ dependencies = [
  "bytes",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "lenso-http-auth"
+version = "0.1.0"
+dependencies = [
+ "lenso-auth-sdk",
+ "lenso-capability-auth",
+ "lenso-capability-http-endpoint",
+ "lenso-kernel",
 ]
 
 [[package]]
@@ -1056,8 +1123,11 @@ dependencies = [
  "hyper",
  "hyper-util",
  "lenso-app-plan",
+ "lenso-auth-sdk",
  "lenso-authoring",
+ "lenso-capability-auth",
  "lenso-capability-http-endpoint",
+ "lenso-http-auth",
  "lenso-kernel",
  "lenso-native-adapter",
  "lenso-runner",
@@ -1065,6 +1135,7 @@ dependencies = [
  "serde",
  "serde_json",
  "stats_alloc",
+ "time",
  "tokio",
  "tower",
  "tower-http",
@@ -1131,6 +1202,12 @@ dependencies = [
  "wasi",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "num-conv"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "521739c6d2bac4aa25192232afe6841231376b2b26d4d9fae5ecf8ca5772e441"
 
 [[package]]
 name = "once_cell"
@@ -1213,6 +1290,12 @@ checksum = "d83eb9bc6d8e5cf568e7a1101d60ee05e81ed50ea106026f3d18deeb046d7661"
 dependencies = [
  "zerovec",
 ]
+
+[[package]]
+name = "powerfmt"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
 
 [[package]]
 name = "ppv-lite86"
@@ -1579,6 +1662,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
+name = "ryu"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
 name = "same-file"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1672,6 +1761,18 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "serde_urlencoded"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3491c14715ca2294c4d6a88f15e84739788c1d030eed8c110436aafdaa2f3fd"
+dependencies = [
+ "form_urlencoded",
+ "itoa",
+ "ryu",
+ "serde",
 ]
 
 [[package]]
@@ -1864,6 +1965,36 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.3",
+]
+
+[[package]]
+name = "time"
+version = "0.3.55"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cdb87b95ec50ddfa440816d227a17b2ccbdda963a316a727fda0fc4334f7d134"
+dependencies = [
+ "deranged",
+ "num-conv",
+ "powerfmt",
+ "serde_core",
+ "time-core",
+ "time-macros",
+]
+
+[[package]]
+name = "time-core"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e1c906769ad99c88eaa54e728060edef082f8e358ff32030cb7c7d315e81109"
+
+[[package]]
+name = "time-macros"
+version = "0.2.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e689342a48d2ea927c87ea50cabf8594854bf940e9310208848d680d668ed85"
+dependencies = [
+ "num-conv",
+ "time-core",
 ]
 
 [[package]]

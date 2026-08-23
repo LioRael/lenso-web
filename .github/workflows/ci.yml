@@ -28,8 +28,8 @@ jobs:
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Check portable Capability packages
         run: |
-          cargo check --locked -p lenso-capability-http-client -p lenso-capability-http-endpoint --target wasm32-unknown-unknown
-          cargo check --locked -p lenso-capability-http-client -p lenso-capability-http-endpoint --target wasm32-wasip2
+          cargo check --locked -p lenso-capability-http-client -p lenso-capability-http-endpoint -p lenso-http-auth --target wasm32-unknown-unknown
+          cargo check --locked -p lenso-capability-http-client -p lenso-capability-http-endpoint -p lenso-http-auth --target wasm32-wasip2
       - name: Package Capability crates
         run: |
           cargo package --locked -p lenso-capability-http-client
@@ -45,5 +45,6 @@ jobs:
         # test, and lint these consumers against the exact local Capability sources. Release PRs
         # skip archive preparation until those Capability versions exist in the registry.
         run: |
+          cargo package --locked --no-verify -p lenso-http-auth
           cargo package --locked --no-verify -p lenso-http-egress
           cargo package --locked --no-verify -p lenso-web-ingress
