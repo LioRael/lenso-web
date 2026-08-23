@@ -1,6 +1,8 @@
 use std::{
+    io::{BufRead as _, BufReader as StdBufReader, Write as _},
     net::SocketAddr,
     path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
     rc::Rc,
     time::{Duration, Instant},
 };
@@ -17,21 +19,20 @@ use axum::{
     response::{IntoResponse, Response},
     routing::post,
 };
-use futures::{future::LocalBoxFuture, future::join_all};
+use futures::future::join_all;
 use lenso_authoring::{
     Binding, CapabilityEndpoint, CapabilityRequirement, ContractInput, Module, PackageInput,
     PackageSource, ProjectAuthoring, ProjectFile, ResolutionOptions,
 };
 use lenso_capability_http_endpoint::{
     CAPABILITY_ID, DESCRIBE_OPERATION, DESCRIPTOR_VERSION, DescribeRequest, DescribeResponse,
-    DescribeResponseRoutesItem, EndpointDescribeInvocationError, EndpointEndpoint,
-    EndpointHandleInvocationError, EndpointProvider, HANDLE_OPERATION, HandleRequest,
-    HandleResponse,
+    DescribeResponseRoutesItem, EndpointDescribe, EndpointEndpoint, EndpointHandle,
+    EndpointProvider, HANDLE_OPERATION, HandleRequest, HandleResponse,
 };
-use lenso_kernel::{InvocationContext, Kernel, NativeApp, RuntimeFailure};
+use lenso_kernel::{InvocationContext, Kernel, NativeApp, NativeRequestFuture, RuntimeFailure};
 use lenso_native_adapter::{NativeModuleFactory, NativeModuleFactoryContext, NativeModuleInstance};
 use lenso_runner::TokioDriver;
-use lenso_web_ingress::{PACKAGE_ID, WebIngressConfig, WebIngressFactory};
+use lenso_web_ingress::{PACKAGE_ID, PACKAGE_VERSION, WebIngressConfig, WebIngressFactory};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
@@ -84,6 +85,162 @@ pub(crate) fn main_with_observer(observer: &mut impl MeasurementObserver) {
         .build()
         .expect("benchmark runtime")
         .block_on(LocalSet::new().run_until(run(observer)));
+}
+
+#[allow(dead_code)]
+pub(crate) fn main_process() {
+    if let Ok(server) = std::env::var("LENSO_HTTP_BENCH_CHILD") {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("benchmark child runtime")
+            .block_on(LocalSet::new().run_until(run_child(&server)));
+        return;
+    }
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("benchmark client runtime")
+        .block_on(LocalSet::new().run_until(run_process_benchmark()));
+}
+
+#[allow(dead_code)]
+async fn run_process_benchmark() {
+    let selected = std::env::var("LENSO_HTTP_BENCH_SERVER").ok();
+    println!("Independent-process HTTP ingress benchmark");
+    println!(
+        "server\trequest_body_bytes\tconnections\trequests\tmedian_req_s\tsamples_req_s\tp50_us\tp99_us"
+    );
+    for request_body_size in REQUEST_BODY_SIZES {
+        if !selected_number("LENSO_HTTP_BENCH_BODY_BYTES", request_body_size) {
+            continue;
+        }
+        let requests = request_count(request_body_size);
+        for connections in CONNECTION_COUNTS {
+            if !selected_number("LENSO_HTTP_BENCH_CONNECTIONS", connections) {
+                continue;
+            }
+            for server in ["axum", "axum_transport", "bridge", "lenso"] {
+                if selected
+                    .as_deref()
+                    .is_some_and(|selected| selected != server)
+                {
+                    continue;
+                }
+                let (mut child, address) = spawn_server_process(server);
+                report_process(server, address, request_body_size, connections, requests).await;
+                child.kill().expect("stop benchmark server process");
+                child.wait().expect("reap benchmark server process");
+            }
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn spawn_server_process(server: &str) -> (Child, SocketAddr) {
+    let mut child = Command::new(std::env::current_exe().expect("benchmark executable"))
+        .env("LENSO_HTTP_BENCH_CHILD", server)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn benchmark server process");
+    let stdout = child.stdout.take().expect("benchmark child stdout");
+    let mut stdout = StdBufReader::new(stdout);
+    let mut address = String::new();
+    stdout
+        .read_line(&mut address)
+        .expect("read benchmark child address");
+    let address = address
+        .trim()
+        .parse()
+        .expect("benchmark child printed a socket address");
+    (child, address)
+}
+
+#[allow(dead_code)]
+async fn run_child(server: &str) {
+    match server {
+        "lenso" => {
+            let ingress = WebIngressFactory::default();
+            let app = start_lenso(&ingress).await.expect("Lenso App should start");
+            let address = ingress.local_address().expect("Ingress should be bound");
+            hold_server(address, app).await;
+        }
+        "axum" => {
+            let (address, shutdown) = start_axum().await;
+            hold_server(address, shutdown).await;
+        }
+        "axum_transport" => {
+            let (address, shutdown) = start_axum_transport().await;
+            hold_server(address, shutdown).await;
+        }
+        "bridge" => {
+            let (address, shutdown) = start_bridge().await;
+            hold_server(address, shutdown).await;
+        }
+        _ => panic!("unknown benchmark child server `{server}`"),
+    }
+}
+
+#[allow(dead_code)]
+async fn hold_server<T>(address: SocketAddr, _guard: T) {
+    println!("{address}");
+    std::io::stdout()
+        .flush()
+        .expect("flush benchmark child address");
+    std::future::pending::<()>().await;
+}
+
+#[allow(dead_code)]
+async fn report_process(
+    server: &str,
+    address: SocketAddr,
+    request_body_size: usize,
+    connections: usize,
+    requests: usize,
+) {
+    let mut observer = NoopObserver;
+    let mut samples = Vec::with_capacity(SAMPLE_COUNT);
+    for _ in 0..SAMPLE_COUNT {
+        samples.push(
+            measure(
+                &mut observer,
+                server,
+                address,
+                request_body_size,
+                connections,
+                requests,
+            )
+            .await
+            .as_secs_f64(),
+        );
+    }
+    let request_count = u32::try_from(requests).expect("benchmark request count fits in u32");
+    let mut rates = samples
+        .into_iter()
+        .map(|seconds| f64::from(request_count) / seconds)
+        .collect::<Vec<_>>();
+    rates.sort_by(f64::total_cmp);
+    let mut client = Client::connect(address)
+        .await
+        .expect("connect latency benchmark client");
+    let mut latencies = Vec::with_capacity(512);
+    for _ in 0..512 {
+        let started = Instant::now();
+        client.requests(request_body_size, 1).await;
+        latencies.push(started.elapsed().as_micros());
+    }
+    latencies.sort_unstable();
+    let rendered = rates
+        .iter()
+        .map(|rate| format!("{rate:.0}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    println!(
+        "{server}\t{request_body_size}\t{connections}\t{requests}\t{:.0}\t{rendered}\t{}\t{}",
+        rates[rates.len() / 2],
+        latencies[latencies.len() / 2],
+        latencies[latencies.len() * 99 / 100],
+    );
 }
 
 async fn run(observer: &mut impl MeasurementObserver) {
@@ -472,7 +629,7 @@ fn project() -> ProjectFile {
     for package in [FIXTURE_PACKAGE_ID, PACKAGE_ID] {
         project.packages_mut().insert(
             package.to_owned(),
-            PackageInput::new(package, PackageSource::Cargo, "0.1.0")
+            PackageInput::new(package, PackageSource::Cargo, PACKAGE_VERSION)
                 .with_package_name("lenso-web-ingress")
                 .with_manifest("crates/lenso-web-ingress/Cargo.toml")
                 .with_lockfile("Cargo.lock"),
@@ -537,7 +694,7 @@ impl NativeModuleFactory for FixtureEndpointFactory {
     }
 
     fn package_version(&self) -> &'static str {
-        "0.1.0"
+        PACKAGE_VERSION
     }
 
     fn instantiate(
@@ -562,27 +719,27 @@ impl EndpointProvider for FixtureEndpoint {
         &self,
         _context: InvocationContext,
         _request: DescribeRequest,
-    ) -> LocalBoxFuture<'static, Result<DescribeResponse, EndpointDescribeInvocationError>> {
-        Box::pin(futures::future::ready(Ok(DescribeResponse {
+    ) -> NativeRequestFuture<EndpointDescribe> {
+        Box::pin(futures::future::ready(Ok(Ok(DescribeResponse {
             routes: self.routes.as_ref().clone(),
-        })))
+        }))))
     }
 
     fn handle(
         &self,
         _context: InvocationContext,
         request: HandleRequest,
-    ) -> LocalBoxFuture<'static, Result<HandleResponse, EndpointHandleInvocationError>> {
+    ) -> NativeRequestFuture<EndpointHandle> {
         let expected = request
             .route_id
             .parse::<usize>()
             .expect("benchmark route is a body size");
         assert_eq!(request.body.len(), expected);
         assert!(request.body.iter().all(|byte| *byte == b'x'));
-        Box::pin(futures::future::ready(Ok(HandleResponse {
+        Box::pin(futures::future::ready(Ok(Ok(HandleResponse {
             body: request.body,
             headers: Vec::new(),
             status: 200,
-        })))
+        }))))
     }
 }

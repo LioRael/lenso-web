@@ -5,6 +5,7 @@ use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
 #[global_allocator]
 static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
+#[allow(dead_code)]
 mod benchmark {
     include!("http_ingress.rs");
 }

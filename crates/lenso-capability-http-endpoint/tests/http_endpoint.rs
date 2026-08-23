@@ -51,7 +51,9 @@ fn one_route_table_drives_description_and_handler_dispatch() {
     let endpoint = OrdersHttp::default();
     assert_eq!(OrdersHttp::ROUTES.len(), 2);
 
-    let description = block_on(endpoint.describe(context(1), DescribeRequest {})).unwrap();
+    let description = block_on(endpoint.describe(context(1), DescribeRequest {}))
+        .unwrap()
+        .unwrap();
     assert_eq!(description.routes.len(), 2);
     assert_eq!(description.routes[0].route_id, "orders.create");
     assert_eq!(description.routes[0].method, "POST");
@@ -62,6 +64,7 @@ fn one_route_table_drives_description_and_handler_dispatch() {
         context(2),
         request("orders.read").with_path_parameter("order_id", "order-42"),
     ))
+    .unwrap()
     .unwrap();
     assert_eq!(response.status, 200);
     assert_eq!(response.body.as_slice(), br#"{"id":"order-42"}"#);
@@ -72,10 +75,7 @@ fn one_route_table_drives_description_and_handler_dispatch() {
 fn direct_invocation_of_an_undeclared_route_fails_closed() {
     let endpoint = OrdersHttp::default();
     let result = block_on(endpoint.handle(context(3), request("orders.delete").into()));
-    assert_eq!(
-        result,
-        Err(EndpointHandleInvocationError::Domain(HandleError::Rejected))
-    );
+    assert_eq!(result, Ok(Err(HandleError::Rejected)));
     assert!(endpoint.handled.borrow().is_empty());
 }
 

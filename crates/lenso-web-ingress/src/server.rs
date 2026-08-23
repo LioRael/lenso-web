@@ -1,6 +1,17 @@
-use std::{cell::Cell, collections::HashSet, convert::Infallible, panic::AssertUnwindSafe, rc::Rc};
+use std::{
+    cell::Cell,
+    collections::HashSet,
+    convert::Infallible,
+    future::Future,
+    panic::AssertUnwindSafe,
+    rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use futures::{FutureExt as _, StreamExt as _, stream::FuturesUnordered};
 use http::{
     HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri, Version,
@@ -9,9 +20,9 @@ use http::{
         TRANSFER_ENCODING, UPGRADE,
     },
 };
-use http_body_util::{BodyExt as _, Full, LengthLimitError, Limited};
-use hyper::{body::Incoming, server::conn::http1, service::service_fn};
-use hyper_util::rt::TokioIo;
+use http_body_util::{BodyExt as _, Full};
+use hyper::{body::Incoming, service::service_fn};
+use hyper_util::{rt::TokioIo, server::conn::auto};
 use lenso_capability_http_endpoint::HandleResponse;
 use lenso_kernel::CancellationToken;
 use tokio::{
@@ -19,7 +30,10 @@ use tokio::{
     sync::{Semaphore, oneshot},
 };
 
-use crate::{WebIngressConfig, routing::DispatchError, routing::RouteTable};
+use crate::{
+    WebIngressConfig, replication::ReplicaConnectionSource, routing::DispatchError,
+    routing::RouteTable,
+};
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 const NOSNIFF_HEADER: HeaderName = HeaderName::from_static("x-content-type-options");
@@ -59,8 +73,27 @@ struct IngressService {
     cancellation: CancellationToken,
     config: WebIngressConfig,
     routes: Rc<RouteTable>,
-    concurrency: Rc<Semaphore>,
-    next_request_id: Rc<Cell<u64>>,
+    concurrency: Arc<Semaphore>,
+    next_request_id: RequestIdSequence,
+}
+
+#[derive(Clone, Debug)]
+enum RequestIdSequence {
+    Local(Rc<Cell<u64>>),
+    Replicated(Arc<AtomicU64>),
+}
+
+impl RequestIdSequence {
+    fn next(&self) -> u64 {
+        match self {
+            Self::Local(next) => {
+                let value = next.get();
+                next.set(value.wrapping_add(1));
+                value
+            }
+            Self::Replicated(next) => next.fetch_add(1, Ordering::Relaxed),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -121,18 +154,69 @@ impl IngressResponse {
     }
 }
 
+#[derive(Debug)]
+pub(super) enum ConnectionSource {
+    Listener(TcpListener),
+    Replica(ReplicaConnectionSource),
+}
+
+impl ConnectionSource {
+    fn concurrency(&self, limit: usize) -> Arc<Semaphore> {
+        match self {
+            Self::Listener(_) => Arc::new(Semaphore::new(limit)),
+            Self::Replica(source) => Arc::clone(&source.concurrency),
+        }
+    }
+
+    fn request_ids(&self) -> RequestIdSequence {
+        match self {
+            Self::Listener(_) => RequestIdSequence::Local(Rc::new(Cell::new(0))),
+            Self::Replica(source) => {
+                RequestIdSequence::Replicated(Arc::clone(&source.next_request_id))
+            }
+        }
+    }
+
+    async fn accept(&mut self) -> std::io::Result<Option<tokio::net::TcpStream>> {
+        match self {
+            Self::Listener(listener) => listener.accept().await.map(|(stream, _)| Some(stream)),
+            Self::Replica(source) => loop {
+                let Some(stream) = source.receiver.recv().await else {
+                    return Ok(None);
+                };
+                if let Ok(stream) = tokio::net::TcpStream::from_std(stream) {
+                    return Ok(Some(stream));
+                }
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LocalExecutor;
+
+impl<F> hyper::rt::Executor<F> for LocalExecutor
+where
+    F: Future<Output = ()> + 'static,
+{
+    fn execute(&self, future: F) {
+        tokio::task::spawn_local(future);
+    }
+}
+
 pub(super) async fn serve(
-    listener: TcpListener,
+    mut source: ConnectionSource,
     config: WebIngressConfig,
     routes: std::rc::Rc<RouteTable>,
     cancellation: CancellationToken,
 ) -> std::io::Result<()> {
+    let next_request_id = source.request_ids();
     let service = IngressService {
         cancellation: cancellation.clone(),
-        concurrency: Rc::new(Semaphore::new(config.max_concurrent_requests())),
+        concurrency: source.concurrency(config.max_concurrent_requests()),
         config,
         routes,
-        next_request_id: Rc::new(Cell::new(0)),
+        next_request_id,
     };
     let (shutdown, _) = tokio::sync::watch::channel(false);
     let mut connections = FuturesUnordered::new();
@@ -143,18 +227,25 @@ pub(super) async fn serve(
                 while connections.next().await.is_some() {}
                 return Ok(());
             }
-            accepted = listener.accept() => {
-                let (stream, _) = match accepted {
-                    Ok(accepted) => accepted,
+            accepted = source.accept() => {
+                let stream = match accepted {
+                    Ok(Some(stream)) => stream,
+                    Ok(None) => {
+                        shutdown.send_replace(true);
+                        while connections.next().await.is_some() {}
+                        return Ok(());
+                    }
                     Err(error) => {
                         shutdown.send_replace(true);
+                        while connections.next().await.is_some() {}
                         return Err(error);
                     }
                 };
                 let connection_service = service.clone();
                 let mut shutdown_signal = shutdown.subscribe();
                 connections.push(tokio::task::spawn_local(async move {
-                    let connection = http1::Builder::new().serve_connection(
+                    let builder = auto::Builder::new(LocalExecutor);
+                    let connection = builder.serve_connection(
                         TokioIo::new(stream),
                         service_fn(move |request| connection_service.clone().call(request)),
                     );
@@ -230,19 +321,18 @@ impl IngressService {
         if content_length.is_some_and(|length| length > self.config.max_request_body_bytes()) {
             return payload_too_large();
         }
-        let body_limit = content_length.map_or(self.config.max_request_body_bytes(), |length| {
-            length.min(self.config.max_request_body_bytes())
-        });
         let body = tokio::select! {
-            body = Limited::new(body, body_limit).collect() => body,
+            body = collect_bounded_body(
+                body,
+                content_length,
+                self.config.max_request_body_bytes(),
+            ) => body,
             () = self.cancellation.cancelled() => return unavailable(),
         };
         let body = match body {
-            Ok(body) => body.to_bytes(),
-            Err(error) if error.downcast_ref::<LengthLimitError>().is_some() => {
-                return payload_too_large();
-            }
-            Err(_) => return bad_request(),
+            Ok(body) => body,
+            Err(BodyReadError::TooLarge) => return payload_too_large(),
+            Err(BodyReadError::Invalid) => return bad_request(),
         };
         let (disconnect, disconnected) = oneshot::channel();
         let cancel_on_drop = CancelRequestOnDrop(Some(disconnect));
@@ -267,6 +357,53 @@ impl IngressService {
         drop(cancel_on_drop);
         response
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BodyReadError {
+    TooLarge,
+    Invalid,
+}
+
+async fn collect_bounded_body(
+    mut body: Incoming,
+    content_length: Option<usize>,
+    limit: usize,
+) -> Result<Bytes, BodyReadError> {
+    let mut first = None::<Bytes>;
+    let mut combined = None::<BytesMut>;
+    let mut total = 0_usize;
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|_| BodyReadError::Invalid)?;
+        let Ok(data) = frame.into_data() else {
+            continue;
+        };
+        total = total
+            .checked_add(data.len())
+            .ok_or(BodyReadError::TooLarge)?;
+        if total > limit {
+            return Err(BodyReadError::TooLarge);
+        }
+        if data.is_empty() {
+            continue;
+        }
+        if let Some(buffer) = &mut combined {
+            buffer.extend_from_slice(&data);
+        } else if let Some(initial) = first.take() {
+            let capacity = content_length.unwrap_or(total).min(limit).max(total);
+            let mut buffer = BytesMut::with_capacity(capacity);
+            buffer.extend_from_slice(&initial);
+            buffer.extend_from_slice(&data);
+            combined = Some(buffer);
+        } else {
+            first = Some(data);
+        }
+    }
+    Ok(match (combined, first) {
+        (Some(buffer), _) => buffer.freeze(),
+        (None, Some(data)) => data,
+        (None, None) => Bytes::new(),
+    })
 }
 
 fn dispatch_response(result: Result<HandleResponse, DispatchError>) -> IngressResponse {
@@ -295,10 +432,8 @@ fn mark_sensitive_headers(headers: &mut HeaderMap) {
     }
 }
 
-fn replace_request_id(headers: &mut HeaderMap, next: &Cell<u64>) -> HeaderValue {
-    let value = next.get();
-    next.set(value.wrapping_add(1));
-    let request_id = request_id_header_value(value);
+fn replace_request_id(headers: &mut HeaderMap, next: &RequestIdSequence) -> HeaderValue {
+    let request_id = request_id_header_value(next.next());
     headers.insert(REQUEST_ID_HEADER, request_id.clone());
     request_id
 }
@@ -312,14 +447,25 @@ fn connection_owned_headers(headers: &HeaderMap) -> Result<HashSet<HeaderName>, 
             .map(str::trim)
             .filter(|name| !name.is_empty())
         {
+            if is_static_hop_by_hop_name(name) {
+                continue;
+            }
             let name = HeaderName::from_bytes(name.as_bytes())
                 .map_err(|_| RequestRejection::BadRequest)?;
-            if !is_static_hop_by_hop_header(&name) {
-                owned.insert(name);
-            }
+            owned.insert(name);
         }
     }
     Ok(owned)
+}
+
+fn is_static_hop_by_hop_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case("connection")
+        || name.eq_ignore_ascii_case("te")
+        || name.eq_ignore_ascii_case("trailer")
+        || name.eq_ignore_ascii_case("transfer-encoding")
+        || name.eq_ignore_ascii_case("upgrade")
+        || name.eq_ignore_ascii_case("keep-alive")
+        || name.eq_ignore_ascii_case("proxy-connection")
 }
 
 fn is_static_hop_by_hop_header(name: &HeaderName) -> bool {
@@ -547,8 +693,8 @@ fn invalid_endpoint_response() -> IngressResponse {
 #[cfg(test)]
 mod tests {
     use super::{
-        assert_server_result, canonical_request_head_len, request_id_header_value,
-        serialized_uri_len,
+        assert_server_result, canonical_request_head_len, is_static_hop_by_hop_name,
+        request_id_header_value, serialized_uri_len,
     };
     use axum::http::{Request, Uri, Version};
 
@@ -592,5 +738,12 @@ mod tests {
     #[should_panic(expected = "Web Ingress server failed")]
     fn server_errors_are_not_silently_discarded() {
         assert_server_result(Err(std::io::Error::other("fixture failure")));
+    }
+
+    #[test]
+    fn hop_by_hop_names_are_filtered_before_header_name_allocation() {
+        assert!(is_static_hop_by_hop_name("keep-alive"));
+        assert!(is_static_hop_by_hop_name("Transfer-Encoding"));
+        assert!(!is_static_hop_by_hop_name("x-forwarded-for"));
     }
 }

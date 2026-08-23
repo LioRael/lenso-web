@@ -148,22 +148,15 @@ impl RequestCapability for EndpointDescribe {
 
     fn invoke_native(endpoint: &dyn NativeRequestEndpoint, operation: &str, request: Self::Request, context: InvocationContext) -> NativeRequestFuture<Self> {
         if operation != DESCRIBE_OPERATION {
-            return lenso_kernel::invoke_erased_native_request::<Self>(endpoint, operation, request, context);
+            return lenso_kernel::invoke_typed_or_erased_native_request::<Self>(endpoint, operation, request, context);
         }
         let Some(typed_endpoint) = endpoint
             .typed_endpoint()
             .and_then(|endpoint| endpoint.downcast_ref::<EndpointRequestEndpoint>())
         else {
-            return lenso_kernel::invoke_erased_native_request::<Self>(endpoint, operation, request, context);
+            return lenso_kernel::invoke_typed_or_erased_native_request::<Self>(endpoint, operation, request, context);
         };
-        let provider = Rc::clone(&typed_endpoint.provider);
-        Box::pin(async move {
-            match provider.describe(context, request).await {
-                Ok(value) => Ok(Ok(value)),
-                Err(EndpointDescribeInvocationError::Domain(error)) => Ok(Err(error)),
-                Err(EndpointDescribeInvocationError::Runtime(error)) => Err(error),
-            }
-        })
+        Rc::clone(&typed_endpoint.provider).describe(context, request)
     }
 }
 
@@ -178,22 +171,15 @@ impl RequestCapability for EndpointHandle {
 
     fn invoke_native(endpoint: &dyn NativeRequestEndpoint, operation: &str, request: Self::Request, context: InvocationContext) -> NativeRequestFuture<Self> {
         if operation != HANDLE_OPERATION {
-            return lenso_kernel::invoke_erased_native_request::<Self>(endpoint, operation, request, context);
+            return lenso_kernel::invoke_typed_or_erased_native_request::<Self>(endpoint, operation, request, context);
         }
         let Some(typed_endpoint) = endpoint
             .typed_endpoint()
             .and_then(|endpoint| endpoint.downcast_ref::<EndpointRequestEndpoint>())
         else {
-            return lenso_kernel::invoke_erased_native_request::<Self>(endpoint, operation, request, context);
+            return lenso_kernel::invoke_typed_or_erased_native_request::<Self>(endpoint, operation, request, context);
         };
-        let provider = Rc::clone(&typed_endpoint.provider);
-        Box::pin(async move {
-            match provider.handle(context, request).await {
-                Ok(value) => Ok(Ok(value)),
-                Err(EndpointHandleInvocationError::Domain(error)) => Ok(Err(error)),
-                Err(EndpointHandleInvocationError::Runtime(error)) => Err(error),
-            }
-        })
+        Rc::clone(&typed_endpoint.provider).handle(context, request)
     }
 }
 
@@ -306,8 +292,8 @@ pub fn encode_handle_error(value: &HandleError) -> Result<String, serde_json::Er
 pub fn decode_handle_error(wire: &str) -> Result<HandleError, serde_json::Error> { decode_portable_json(wire) }
 
 pub trait EndpointProvider: fmt::Debug + 'static {
-    fn describe(&self, context: InvocationContext, request: DescribeRequest) -> LocalBoxFuture<'static, Result<DescribeResponse, EndpointDescribeInvocationError>>;
-    fn handle(&self, context: InvocationContext, request: HandleRequest) -> LocalBoxFuture<'static, Result<HandleResponse, EndpointHandleInvocationError>>;
+    fn describe(&self, context: InvocationContext, request: DescribeRequest) -> NativeRequestFuture<EndpointDescribe>;
+    fn handle(&self, context: InvocationContext, request: HandleRequest) -> NativeRequestFuture<EndpointHandle>;
 }
 
 #[derive(Debug)]
@@ -337,26 +323,26 @@ impl<P: EndpointProvider> NativeRequestEndpoint for EndpointEndpoint<P> {
                 let Ok(request) = request.downcast::<DescribeRequest>() else {
                     return Box::pin(futures::future::ready(Err(RuntimeFailure::ProtocolViolation { capability: CAPABILITY_ID })));
                 };
-                let provider = Rc::clone(&self.provider);
+                let invocation = Rc::clone(&self.provider).describe(context, *request);
                 Box::pin(async move {
-                    match provider.describe(context, *request).await {
-                        Ok(value) => Ok(Ok(Box::new(value) as Box<dyn std::any::Any>)),
-                        Err(EndpointDescribeInvocationError::Domain(error)) => Ok(Err(Box::new(error) as Box<dyn std::any::Any>)),
-                        Err(EndpointDescribeInvocationError::Runtime(error)) => Err(error),
-                    }
+                    invocation.await.map(|result| {
+                        result
+                            .map(|value| Box::new(value) as Box<dyn std::any::Any>)
+                            .map_err(|error| Box::new(error) as Box<dyn std::any::Any>)
+                    })
                 })
             },
             HANDLE_OPERATION => {
                 let Ok(request) = request.downcast::<HandleRequest>() else {
                     return Box::pin(futures::future::ready(Err(RuntimeFailure::ProtocolViolation { capability: CAPABILITY_ID })));
                 };
-                let provider = Rc::clone(&self.provider);
+                let invocation = Rc::clone(&self.provider).handle(context, *request);
                 Box::pin(async move {
-                    match provider.handle(context, *request).await {
-                        Ok(value) => Ok(Ok(Box::new(value) as Box<dyn std::any::Any>)),
-                        Err(EndpointHandleInvocationError::Domain(error)) => Ok(Err(Box::new(error) as Box<dyn std::any::Any>)),
-                        Err(EndpointHandleInvocationError::Runtime(error)) => Err(error),
-                    }
+                    invocation.await.map(|result| {
+                        result
+                            .map(|value| Box::new(value) as Box<dyn std::any::Any>)
+                            .map_err(|error| Box::new(error) as Box<dyn std::any::Any>)
+                    })
                 })
             }
             _ => Box::pin(futures::future::ready(Err(RuntimeFailure::UnknownOperation { capability: CAPABILITY_ID, operation: operation.to_owned() }))),

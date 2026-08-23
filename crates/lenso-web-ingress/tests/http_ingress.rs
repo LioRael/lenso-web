@@ -8,23 +8,30 @@ use std::{
     time::Duration,
 };
 
-use futures::{future::LocalBoxFuture, future::pending};
+use futures::future::pending;
+use http_body_util::{BodyExt as _, Full};
+use hyper::{Request, Version, client::conn::http2};
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use lenso_authoring::{
     Binding, CapabilityEndpoint, CapabilityRequirement, ContractInput, Module, PackageInput,
     PackageSource, ProjectAuthoring, ProjectFile, ResolutionOptions,
 };
 use lenso_capability_http_endpoint::{
     Bytes as ContractBytes, CAPABILITY_ID, DESCRIBE_OPERATION, DESCRIPTOR_VERSION, DescribeRequest,
-    DescribeResponse, DescribeResponseRoutesItem, EndpointDescribeInvocationError,
-    EndpointEndpoint, EndpointHandleInvocationError, EndpointProvider, HANDLE_OPERATION,
-    HandleError, HandleRequest, HandleResponse, HandleResponseHeadersItem, http_endpoint,
+    DescribeResponse, DescribeResponseRoutesItem, EndpointDescribe, EndpointEndpoint,
+    EndpointHandle, EndpointHandleInvocationError, EndpointProvider, HANDLE_OPERATION, HandleError,
+    HandleRequest, HandleResponse, HandleResponseHeadersItem, http_endpoint,
 };
-use lenso_kernel::{InvocationContext, Kernel, NativeApp, RuntimeFailure, ShutdownOutcome};
+use lenso_kernel::{
+    InvocationContext, Kernel, NativeApp, NativeRequestFuture, RuntimeFailure, ShutdownOutcome,
+};
 use lenso_native_adapter::{
     NativeModuleFactory, NativeModuleFactoryContext, NativeModuleInstance, NativeModuleRegistry,
 };
 use lenso_runner::TokioDriver;
-use lenso_web_ingress::{PACKAGE_ID, PACKAGE_VERSION, WebIngressConfig, WebIngressFactory};
+use lenso_web_ingress::{
+    PACKAGE_ID, PACKAGE_VERSION, WebIngressConfig, WebIngressFactory, WebIngressListenerCoordinator,
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -34,6 +41,98 @@ use tokio::{
 const ORDERS_PACKAGE_ID: &str = "fixture.orders-http";
 const STATUS_PACKAGE_ID: &str = "fixture.status-http";
 const SDK_PACKAGE_ID: &str = "fixture.sdk-orders-http";
+
+#[tokio::test(flavor = "current_thread")]
+async fn equivalent_replicas_share_one_listener_and_receive_connections() {
+    LocalSet::new()
+        .run_until(async {
+            let coordinator = WebIngressListenerCoordinator::bind(WebIngressConfig::default(), 2)
+                .await
+                .expect("coordinator should bind once");
+            let first_ingress = WebIngressFactory::replicated(&coordinator).unwrap();
+            let second_ingress = WebIngressFactory::replicated(&coordinator).unwrap();
+            let first_endpoint = FixtureEndpointFactory::new(
+                ORDERS_PACKAGE_ID,
+                [("orders.read", "GET", "/orders/{order_id}")],
+            );
+            let second_endpoint = FixtureEndpointFactory::new(
+                ORDERS_PACKAGE_ID,
+                [("orders.read", "GET", "/orders/{order_id}")],
+            );
+            let first = start(
+                project(&[ProviderPlan::new("orders-http", ORDERS_PACKAGE_ID)]),
+                &first_ingress,
+                [first_endpoint.clone()],
+            )
+            .await
+            .unwrap();
+            let second = start(
+                project(&[ProviderPlan::new("orders-http", ORDERS_PACKAGE_ID)]),
+                &second_ingress,
+                [second_endpoint.clone()],
+            )
+            .await
+            .unwrap();
+
+            let address = coordinator.local_address();
+            let first_response = request(address, "GET", "/orders/1", &[], "").await;
+            let second_response = request(address, "GET", "/orders/2", &[], "").await;
+            assert_eq!(first_response.status, 200);
+            assert_eq!(second_response.status, 200);
+            assert_ne!(
+                first_response.headers.get("x-request-id"),
+                second_response.headers.get("x-request-id")
+            );
+            assert!(first_endpoint.observed().is_some());
+            assert!(second_endpoint.observed().is_some());
+
+            first.shutdown(Duration::from_secs(1)).await;
+            second.shutdown(Duration::from_secs(1)).await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ingress_accepts_http2_prior_knowledge() {
+    LocalSet::new()
+        .run_until(async {
+            let endpoint = FixtureEndpointFactory::new(
+                ORDERS_PACKAGE_ID,
+                [("orders.read", "GET", "/orders/{order_id}")],
+            );
+            let ingress = WebIngressFactory::default();
+            let app = start(
+                project(&[ProviderPlan::new("orders-http", ORDERS_PACKAGE_ID)]),
+                &ingress,
+                [endpoint],
+            )
+            .await
+            .unwrap();
+            let address = ingress.local_address().unwrap();
+            let stream = TcpStream::connect(address).await.unwrap();
+            let (mut sender, connection) =
+                http2::handshake(TokioExecutor::new(), TokioIo::new(stream))
+                    .await
+                    .expect("HTTP/2 handshake should succeed");
+            tokio::task::spawn_local(async move {
+                connection
+                    .await
+                    .expect("HTTP/2 connection should stay valid");
+            });
+            let request = Request::builder()
+                .version(Version::HTTP_2)
+                .method("GET")
+                .uri(format!("http://{address}/orders/42"))
+                .body(Full::new(bytes::Bytes::new()))
+                .unwrap();
+            let response = sender.send_request(request).await.unwrap();
+            assert_eq!(response.status(), 200);
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            assert!(body.starts_with(br#"{"provider""#));
+            app.shutdown(Duration::from_secs(1)).await;
+        })
+        .await;
+}
 
 #[tokio::test(flavor = "current_thread")]
 #[allow(clippy::too_many_lines)]
@@ -793,17 +892,17 @@ impl EndpointProvider for FixtureEndpoint {
         &self,
         _context: InvocationContext,
         _request: DescribeRequest,
-    ) -> LocalBoxFuture<'static, Result<DescribeResponse, EndpointDescribeInvocationError>> {
-        Box::pin(futures::future::ready(Ok(DescribeResponse {
+    ) -> NativeRequestFuture<EndpointDescribe> {
+        Box::pin(futures::future::ready(Ok(Ok(DescribeResponse {
             routes: self.routes.as_ref().clone(),
-        })))
+        }))))
     }
 
     fn handle(
         &self,
         _context: InvocationContext,
         request: HandleRequest,
-    ) -> LocalBoxFuture<'static, Result<HandleResponse, EndpointHandleInvocationError>> {
+    ) -> NativeRequestFuture<EndpointHandle> {
         assert_ne!(request.route_id, "orders.panic", "fixture endpoint panic");
         self.observed.borrow_mut().replace(request.clone());
         let package_id = self.package_id;
@@ -815,7 +914,8 @@ impl EndpointProvider for FixtureEndpoint {
             if request.route_id == "orders.never" {
                 let _drop_flag = DropFlag(blocked_dropped);
                 blocked_started.set(true);
-                return pending::<Result<HandleResponse, EndpointHandleInvocationError>>().await;
+                return pending::<Result<Result<HandleResponse, HandleError>, RuntimeFailure>>()
+                    .await;
             }
             if request.route_id == "orders.timeout" {
                 tokio::time::sleep(Duration::from_secs(60)).await;
@@ -828,37 +928,37 @@ impl EndpointProvider for FixtureEndpoint {
                 active_calls.set(active_calls.get() - 1);
             }
             if request.route_id == "orders.reject" {
-                return Err(EndpointHandleInvocationError::Domain(HandleError::Rejected));
+                return Ok(Err(HandleError::Rejected));
             }
             if request.route_id == "orders.invalid" {
-                return Ok(HandleResponse {
+                return Ok(Ok(HandleResponse {
                     body: ContractBytes::from(b"invalid status".as_slice()),
                     headers: Vec::new(),
                     status: 1_000,
-                });
+                }));
             }
             if request.route_id == "orders.hop-response" {
-                return Ok(HandleResponse {
+                return Ok(Ok(HandleResponse {
                     body: ContractBytes::from(b"invalid hop header".as_slice()),
                     headers: vec![HandleResponseHeadersItem {
                         name: "connection".to_owned(),
                         value: "close".to_owned(),
                     }],
                     status: 200,
-                });
+                }));
             }
             let body = format!(
                 r#"{{"provider":"{}","route":"{}"}}"#,
                 package_id, request.route_id
             );
-            Ok(HandleResponse {
+            Ok(Ok(HandleResponse {
                 body: body.into_bytes().into(),
                 headers: vec![HandleResponseHeadersItem {
                     name: "content-type".to_owned(),
                     value: "application/json; charset=utf-8".to_owned(),
                 }],
                 status: 200,
-            })
+            }))
         })
     }
 }

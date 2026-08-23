@@ -19,7 +19,11 @@ use lenso_native_adapter::{NativeModuleFactory, NativeModuleFactoryContext, Nati
 use tokio::net::TcpListener;
 
 pub use config::WebIngressConfig;
-pub use replication::{WebIngressReplicaMismatch, WebIngressRoute, WebIngressRouteManifest};
+use replication::WebIngressReplica;
+pub use replication::{
+    WebIngressListenerCoordinator, WebIngressReplicaMismatch, WebIngressRoute,
+    WebIngressRouteManifest,
+};
 
 pub const PACKAGE_ID: &str = "lenso.web-ingress";
 pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -34,6 +38,7 @@ struct WebIngressObserver {
 #[derive(Clone, Debug)]
 pub struct WebIngressFactory {
     observer: Rc<WebIngressObserver>,
+    replica: Option<WebIngressReplica>,
 }
 
 impl WebIngressFactory {
@@ -42,7 +47,17 @@ impl WebIngressFactory {
     pub fn new() -> Self {
         Self {
             observer: Rc::new(WebIngressObserver::default()),
+            replica: None,
         }
+    }
+
+    /// Creates one lane replica backed by a host-owned same-port listener coordinator.
+    pub fn replicated(coordinator: &WebIngressListenerCoordinator) -> Result<Self, RuntimeFailure> {
+        let replica = coordinator.allocate_replica()?;
+        Ok(Self {
+            observer: Rc::new(WebIngressObserver::default()),
+            replica: Some(replica),
+        })
     }
 
     #[must_use]
@@ -87,12 +102,20 @@ impl NativeModuleFactory for WebIngressFactory {
             .map_err(|detail| RuntimeFailure::InvalidResolvedPlan {
                 detail: format!("Web Ingress configuration is invalid: {detail}"),
             })?;
+        if let Some(replica) = &self.replica {
+            replica.validate_config(&config).map_err(|detail| {
+                RuntimeFailure::InvalidResolvedPlan {
+                    detail: format!("Web Ingress replica configuration is invalid: {detail}"),
+                }
+            })?;
+        }
         Ok(NativeModuleInstance::with_lifecycle(
             Vec::new(),
             WebIngressLifecycle {
                 config,
                 observer: self.observer.clone(),
                 listener: Rc::new(RefCell::new(None)),
+                replica: self.replica.clone(),
             },
         ))
     }
@@ -102,6 +125,7 @@ struct WebIngressLifecycle {
     config: WebIngressConfig,
     observer: Rc<WebIngressObserver>,
     listener: Rc<RefCell<Option<TcpListener>>>,
+    replica: Option<WebIngressReplica>,
 }
 
 impl fmt::Debug for WebIngressLifecycle {
@@ -119,7 +143,12 @@ impl ModuleLifecycle for WebIngressLifecycle {
         let config = self.config.clone();
         let observer = self.observer.clone();
         let listener = self.listener.clone();
+        let replica = self.replica.clone();
         Box::pin(async move {
+            if let Some(replica) = replica {
+                observer.local_address.set(Some(replica.local_address()));
+                return Ok(());
+            }
             let bound = TcpListener::bind(config.bind_address())
                 .await
                 .map_err(|error| module_failure(format!("Web Ingress bind failed: {error}")))?;
@@ -133,11 +162,13 @@ impl ModuleLifecycle for WebIngressLifecycle {
     }
 
     fn activate(&self, context: ActivateContext) -> ModuleFuture {
-        let Some(listener) = self.listener.borrow_mut().take() else {
+        let listener = self.listener.borrow_mut().take();
+        let replica = self.replica.clone();
+        if listener.is_none() && replica.is_none() {
             return Box::pin(futures::future::ready(Err(RuntimeFailure::Internal {
                 detail: "Web Ingress listener was not prepared".to_owned(),
             })));
-        };
+        }
         let config = self.config.clone();
         let dependencies = context.dependencies().clone();
         let readiness = context.readiness();
@@ -151,10 +182,19 @@ impl ModuleLifecycle for WebIngressLifecycle {
                 .route_manifest
                 .borrow_mut()
                 .replace(routes.manifest().clone());
+            let source = match replica {
+                Some(replica) => {
+                    let source = replica.register(routes.manifest().clone())?;
+                    server::ConnectionSource::Replica(source)
+                }
+                None => server::ConnectionSource::Listener(
+                    listener.expect("a non-replicated listener was prepared"),
+                ),
+            };
             tasks
                 .spawn_local(Box::pin(async move {
                     readiness.wait().await;
-                    let result = server::serve(listener, config, routes, cancellation).await;
+                    let result = server::serve(source, config, routes, cancellation).await;
                     server::assert_server_result(result);
                 }))
                 .map_err(|error| {
