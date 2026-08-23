@@ -1,40 +1,20 @@
-use std::{
-    collections::HashSet,
-    panic::AssertUnwindSafe,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+use std::{cell::Cell, collections::HashSet, convert::Infallible, panic::AssertUnwindSafe, rc::Rc};
 
-use axum::{
-    Router,
-    body::{Body, Bytes},
-    extract::State,
-    http::{
-        HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode, Uri,
-        header::{
-            AUTHORIZATION, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST, TE, TRAILER,
-            TRANSFER_ENCODING, UPGRADE,
-        },
-    },
-    middleware::{self, Next},
-    response::{IntoResponse, Response},
-};
+use bytes::Bytes;
 use futures::{FutureExt as _, StreamExt as _, stream::FuturesUnordered};
+use http::{
+    HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri,
+    header::{
+        AUTHORIZATION, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST, TE, TRAILER,
+        TRANSFER_ENCODING, UPGRADE,
+    },
+};
+use http_body_util::{BodyExt as _, Full, LengthLimitError, Limited};
+use hyper::{body::Incoming, server::conn::http1, service::service_fn};
+use hyper_util::rt::TokioIo;
 use lenso_capability_http_endpoint::HandleResponse;
 use lenso_kernel::CancellationToken;
-use tokio::{
-    net::TcpListener,
-    sync::{mpsc, oneshot, watch},
-};
-use tower::{ServiceBuilder, limit::GlobalConcurrencyLimitLayer};
-use tower_http::{
-    limit::RequestBodyLimitLayer,
-    request_id::{MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
-    sensitive_headers::SetSensitiveRequestHeadersLayer,
-    set_header::SetResponseHeaderLayer,
-};
+use tokio::{net::TcpListener, sync::Semaphore};
 
 use crate::{WebIngressConfig, routing::DispatchError, routing::RouteTable};
 
@@ -64,33 +44,17 @@ pub(super) struct InboundRequest {
     pub(super) request_id: String,
 }
 
-#[derive(Debug)]
-struct IngressCall {
-    request: InboundRequest,
-    response: oneshot::Sender<IngressResponse>,
-}
-
-#[derive(Clone, Debug)]
-struct IngressBridge {
-    sender: mpsc::Sender<IngressCall>,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RequestRejection {
     BadRequest,
 }
 
-#[derive(Clone, Debug, Default)]
-struct MakeIngressRequestId {
-    next: Arc<AtomicU64>,
-}
-
-impl MakeRequestId for MakeIngressRequestId {
-    fn make_request_id<B>(&mut self, _request: &Request<B>) -> Option<RequestId> {
-        let value = self.next.fetch_add(1, Ordering::Relaxed);
-        let value = request_id_header_value(value);
-        Some(RequestId::new(value))
-    }
+#[derive(Clone, Debug)]
+struct IngressService {
+    config: WebIngressConfig,
+    routes: Rc<RouteTable>,
+    concurrency: Rc<Semaphore>,
+    next_request_id: Rc<Cell<u64>>,
 }
 
 fn request_id_header_value(mut value: u64) -> HeaderValue {
@@ -117,6 +81,14 @@ struct IngressResponse {
 }
 
 impl IngressResponse {
+    fn empty(status: StatusCode) -> Self {
+        Self {
+            status,
+            headers: HeaderMap::new(),
+            body: Bytes::new(),
+        }
+    }
+
     fn json(status: StatusCode, body: &'static str) -> Self {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -131,9 +103,12 @@ impl IngressResponse {
     }
 }
 
-impl IntoResponse for IngressResponse {
-    fn into_response(self) -> Response {
-        (self.status, self.headers, self.body).into_response()
+impl IngressResponse {
+    fn into_response(self) -> Response<Full<Bytes>> {
+        let mut response = Response::new(Full::new(self.body));
+        *response.status_mut() = self.status;
+        *response.headers_mut() = self.headers;
+        response
     }
 }
 
@@ -143,102 +118,116 @@ pub(super) async fn serve(
     routes: std::rc::Rc<RouteTable>,
     cancellation: CancellationToken,
 ) {
-    let (sender, receiver) = mpsc::channel(config.max_concurrent_requests);
-    let transport = ServiceBuilder::new()
-        .layer(SetSensitiveRequestHeadersLayer::new([
-            AUTHORIZATION,
-            COOKIE,
-        ]))
-        .layer(SetRequestIdLayer::new(
-            REQUEST_ID_HEADER.clone(),
-            MakeIngressRequestId::default(),
-        ))
-        .layer(PropagateRequestIdLayer::new(REQUEST_ID_HEADER))
-        .layer(SetResponseHeaderLayer::overriding(
-            NOSNIFF_HEADER,
-            HeaderValue::from_static("nosniff"),
-        ))
-        .layer(RequestBodyLimitLayer::new(config.max_request_body_bytes))
-        .layer(GlobalConcurrencyLimitLayer::new(
-            config.max_concurrent_requests,
-        ));
-    let app = Router::new()
-        .fallback(forward)
-        .with_state(IngressBridge { sender })
-        .layer(middleware::from_fn_with_state(
-            config.max_request_head_bytes,
-            enforce_head_limit,
-        ))
-        .layer(transport);
-    let (shutdown, mut shutdown_signal) = watch::channel(false);
-    let cancellation_bridge = async move {
-        cancellation.cancelled().await;
-        let _ = shutdown.send(true);
+    let service = IngressService {
+        concurrency: Rc::new(Semaphore::new(config.max_concurrent_requests)),
+        config,
+        routes,
+        next_request_id: Rc::new(Cell::new(0)),
     };
-    let server = axum::serve(listener, app).with_graceful_shutdown(async move {
-        while !*shutdown_signal.borrow_and_update() {
-            if shutdown_signal.changed().await.is_err() {
-                return;
-            }
-        }
-    });
-    let dispatcher = dispatch_requests(receiver, routes);
-    let (server, (), ()) = tokio::join!(server, dispatcher, cancellation_bridge);
-    let _ = server;
-}
-
-async fn forward(
-    State(bridge): State<IngressBridge>,
-    method: Method,
-    uri: Uri,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    let request = match inbound_request(&method, &uri, &headers, body) {
-        Ok(request) => request,
-        Err(RequestRejection::BadRequest) => return bad_request().into_response(),
-    };
-    let (response, receive) = oneshot::channel();
-    if bridge
-        .sender
-        .send(IngressCall { request, response })
-        .await
-        .is_err()
-    {
-        return unavailable().into_response();
-    }
-    receive
-        .await
-        .unwrap_or_else(|_| unavailable())
-        .into_response()
-}
-
-async fn dispatch_requests(
-    mut receiver: mpsc::Receiver<IngressCall>,
-    routes: std::rc::Rc<RouteTable>,
-) {
-    let mut calls = FuturesUnordered::new();
-    let mut accepting = true;
+    let (shutdown, _) = tokio::sync::watch::channel(false);
+    let mut connections = FuturesUnordered::new();
     loop {
         tokio::select! {
-            call = receiver.recv(), if accepting => {
-                match call {
-                    Some(call) => {
-                        calls.push(
-                            AssertUnwindSafe(dispatch_request(call, routes.as_ref())).catch_unwind(),
-                        );
+            () = cancellation.cancelled() => break,
+            accepted = listener.accept() => {
+                let Ok((stream, _)) = accepted else {
+                    break;
+                };
+                let connection_service = service.clone();
+                let mut shutdown_signal = shutdown.subscribe();
+                connections.push(tokio::task::spawn_local(async move {
+                    let connection = http1::Builder::new().serve_connection(
+                        TokioIo::new(stream),
+                        service_fn(move |request| connection_service.clone().call(request)),
+                    );
+                    tokio::pin!(connection);
+                    tokio::select! {
+                        _ = &mut connection => {}
+                        () = wait_for_shutdown(&mut shutdown_signal) => {
+                            connection.as_mut().graceful_shutdown();
+                            let _ = connection.await;
+                        }
                     }
-                    None => accepting = false,
-                }
+                }));
             }
-            Some(_) = calls.next(), if !calls.is_empty() => {}
-            else => break,
+            Some(_) = connections.next(), if !connections.is_empty() => {}
+        }
+    }
+    shutdown.send_replace(true);
+    while connections.next().await.is_some() {}
+}
+
+async fn wait_for_shutdown(shutdown: &mut tokio::sync::watch::Receiver<bool>) {
+    while !*shutdown.borrow_and_update() {
+        if shutdown.changed().await.is_err() {
+            return;
         }
     }
 }
 
-async fn dispatch_request(call: IngressCall, routes: &RouteTable) {
-    let response = match routes.dispatch(call.request).await {
+impl IngressService {
+    async fn call(
+        self,
+        mut request: Request<Incoming>,
+    ) -> Result<Response<Full<Bytes>>, Infallible> {
+        let _permit = self
+            .concurrency
+            .acquire()
+            .await
+            .expect("the Ingress concurrency semaphore remains open");
+        mark_sensitive_headers(request.headers_mut());
+        let request_id = ensure_request_id(request.headers_mut(), &self.next_request_id);
+        let mut response = if request_head_size(&request) > self.config.max_request_head_bytes {
+            IngressResponse::json(
+                StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
+                r#"{"error":"request_header_fields_too_large"}"#,
+            )
+        } else {
+            self.dispatch(request).await
+        }
+        .into_response();
+        response.headers_mut().insert(REQUEST_ID_HEADER, request_id);
+        response
+            .headers_mut()
+            .insert(NOSNIFF_HEADER, HeaderValue::from_static("nosniff"));
+        Ok(response)
+    }
+
+    async fn dispatch(&self, request: Request<Incoming>) -> IngressResponse {
+        let (parts, body) = request.into_parts();
+        let content_length = parts
+            .headers
+            .get(CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok()?.parse::<usize>().ok());
+        if content_length.is_some_and(|length| length > self.config.max_request_body_bytes) {
+            return payload_too_large();
+        }
+        let body_limit = content_length.map_or(self.config.max_request_body_bytes, |length| {
+            length.min(self.config.max_request_body_bytes)
+        });
+        let body = match Limited::new(body, body_limit).collect().await {
+            Ok(body) => body.to_bytes(),
+            Err(error) if error.downcast_ref::<LengthLimitError>().is_some() => {
+                return payload_too_large();
+            }
+            Err(_) => return bad_request(),
+        };
+        let request = match inbound_request(&parts.method, &parts.uri, &parts.headers, body) {
+            Ok(request) => request,
+            Err(RequestRejection::BadRequest) => return bad_request(),
+        };
+        match AssertUnwindSafe(self.routes.dispatch(request))
+            .catch_unwind()
+            .await
+        {
+            Ok(result) => dispatch_response(result),
+            Err(_) => unavailable(),
+        }
+    }
+}
+
+fn dispatch_response(result: Result<HandleResponse, DispatchError>) -> IngressResponse {
+    match result {
         Ok(response) => from_endpoint(response),
         Err(DispatchError::NotFound) => {
             IngressResponse::json(StatusCode::NOT_FOUND, r#"{"error":"not_found"}"#)
@@ -251,8 +240,26 @@ async fn dispatch_request(call: IngressCall, routes: &RouteTable) {
             IngressResponse::json(StatusCode::BAD_GATEWAY, r#"{"error":"endpoint_rejected"}"#)
         }
         Err(DispatchError::Unavailable) => unavailable(),
-    };
-    let _ = call.response.send(response);
+    }
+}
+
+fn mark_sensitive_headers(headers: &mut HeaderMap) {
+    for (name, value) in headers.iter_mut() {
+        if name == AUTHORIZATION || name == COOKIE {
+            value.set_sensitive(true);
+        }
+    }
+}
+
+fn ensure_request_id(headers: &mut HeaderMap, next: &Cell<u64>) -> HeaderValue {
+    if let Some(request_id) = headers.get(REQUEST_ID_HEADER) {
+        return request_id.clone();
+    }
+    let value = next.get();
+    next.set(value.wrapping_add(1));
+    let request_id = request_id_header_value(value);
+    headers.insert(REQUEST_ID_HEADER, request_id.clone());
+    request_id
 }
 
 fn connection_owned_headers(headers: &HeaderMap) -> Result<HashSet<HeaderName>, RequestRejection> {
@@ -354,7 +361,7 @@ fn from_endpoint(response: HandleResponse) -> IngressResponse {
         return invalid_endpoint_response();
     };
     let body = response.body.into_shared();
-    let mut headers = HeaderMap::new();
+    let mut headers = HeaderMap::with_capacity(response.headers.len());
     for header in response.headers {
         let Ok(name) = HeaderName::from_bytes(header.name.as_bytes()) else {
             return invalid_endpoint_response();
@@ -374,26 +381,14 @@ fn from_endpoint(response: HandleResponse) -> IngressResponse {
     }
 }
 
-async fn enforce_head_limit(
-    State(max_request_head_bytes): State<usize>,
-    request: Request<Body>,
-    next: Next,
-) -> Response {
-    let size = request.method().as_str().len()
+fn request_head_size<B>(request: &Request<B>) -> usize {
+    request.method().as_str().len()
         + serialized_uri_len(request.uri())
         + request
             .headers()
             .iter()
             .map(|(name, value)| name.as_str().len() + value.as_bytes().len())
-            .sum::<usize>();
-    if size > max_request_head_bytes {
-        return IngressResponse::json(
-            StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
-            r#"{"error":"request_header_fields_too_large"}"#,
-        )
-        .into_response();
-    }
-    next.run(request).await
+            .sum::<usize>()
 }
 
 fn serialized_uri_len(uri: &Uri) -> usize {
@@ -450,6 +445,10 @@ fn unavailable() -> IngressResponse {
         StatusCode::SERVICE_UNAVAILABLE,
         r#"{"error":"endpoint_unavailable"}"#,
     )
+}
+
+fn payload_too_large() -> IngressResponse {
+    IngressResponse::empty(StatusCode::PAYLOAD_TOO_LARGE)
 }
 
 fn invalid_endpoint_response() -> IngressResponse {

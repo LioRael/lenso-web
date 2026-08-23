@@ -275,7 +275,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1003,9 +1003,9 @@ dependencies = [
 
 [[package]]
 name = "lenso-kernel"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "657bb4f55cc0963cc755fc5dff98887881b2cf2418848d6e20b045e7a1b7710b"
+checksum = "82e04e66c31fac8ae52b3bdcef6f381e9fbca302690adf3c2d179b8920a815cc"
 dependencies = [
  "futures",
  "lenso-app-plan",
@@ -1023,9 +1023,9 @@ dependencies = [
 
 [[package]]
 name = "lenso-runner"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b210b22f7569ca495330bc16862310ab1af02dffa4392c0c2087dd28232cba9f"
+checksum = "90161fc41be5f40bacacb77e062bd0d5df9b73f071b4ed10a9c40cfe0d1d3c44"
 dependencies = [
  "cpu-time",
  "futures",
@@ -1039,7 +1039,12 @@ name = "lenso-web-ingress"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "bytes",
  "futures",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "lenso-app-plan",
  "lenso-authoring",
  "lenso-capability-http-endpoint",
@@ -1270,7 +1275,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1535,7 +1540,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs 1.0.9",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2227,7 +2232,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
