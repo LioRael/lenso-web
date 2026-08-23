@@ -25,10 +25,12 @@ route registry.
 `WebIngressConfig` is immutable Module Instance configuration from the Resolved
 App Plan and defaults to an ephemeral loopback listener. App Composition may
 explicitly bind a fixed private or public address; deployment policy stays with
-the host. The first version accepts one `Authorization` credential, replaces
-untrusted external request identifiers, removes credential and hop-by-hop
-headers before dispatch, enforces body/head, concurrency, and Endpoint deadline
-limits, and cooperatively cancels work on client disconnect or App shutdown.
+the host. Ingress serves HTTP/1.1 and cleartext HTTP/2 prior knowledge, accepts
+one `Authorization` credential, replaces untrusted external request identifiers,
+removes credential and hop-by-hop headers before dispatch, enforces body/head,
+concurrency, and Endpoint deadline limits, and cooperatively cancels work on
+client disconnect or App shutdown. Request bodies are collected frame-by-frame
+under the configured limit and avoid a copy when Hyper supplies one data frame.
 
 Customized configuration uses
 `crates/lenso-web-ingress/config.schema.json`. All fields are optional:
@@ -93,6 +95,19 @@ return `502`, unavailable Endpoint execution returns `503`, and Endpoint
 deadlines return `504`. Every Ingress-produced response carries a generated
 `x-request-id` and `x-content-type-options: nosniff`.
 
+Hosts that replicate one App across Runner lanes can bind once and create one
+Ingress factory per lane through `WebIngressListenerCoordinator`. The
+coordinator opens the Ready Gate only after every replica publishes the same
+canonical route manifest, distributes accepted sockets round-robin, and keeps
+the concurrency semaphore global to the listener group:
+
+```rust,no_run
+let coordinator = WebIngressListenerCoordinator::bind(config, lane_count).await?;
+let factories = (0..lane_count)
+    .map(|_| WebIngressFactory::replicated(&coordinator))
+    .collect::<Result<Vec<_>, _>>()?;
+```
+
 `HttpEgressConfig` requires at least one exact `http` or `https` origin. The
 binding and immutable origin list are the caller's outbound authority. Egress
 rejects origin changes, user info, URL fragments, authority/hop-by-hop request
@@ -115,3 +130,13 @@ the configured crates.io Trusted Publishers and GitHub OIDC. Dependency-aware
 publication releases the Capability crates before the dependent
 `lenso-web-ingress` and `lenso-http-egress` Modules, and workspace CI fully
 verifies every package archive.
+
+The independent-process benchmark compares transport-only Axum, the bridge,
+and the complete Lenso path without sharing a Tokio runtime between client and
+server. Filters keep short local runs reproducible:
+
+```sh
+LENSO_HTTP_BENCH_BODY_BYTES=0 \
+LENSO_HTTP_BENCH_CONNECTIONS=8 \
+cargo bench -p lenso-web-ingress --bench http_ingress_process
+```

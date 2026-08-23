@@ -30,5 +30,14 @@ jobs:
         run: |
           cargo check --locked -p lenso-capability-http-client -p lenso-capability-http-endpoint --target wasm32-unknown-unknown
           cargo check --locked -p lenso-capability-http-client -p lenso-capability-http-endpoint --target wasm32-wasip2
-      - name: Package publishable crates
-        run: cargo package --locked --workspace
+      - name: Package Capability crates
+        run: |
+          cargo package --locked -p lenso-capability-http-client
+          cargo package --locked -p lenso-capability-http-endpoint
+      - name: Package Capability consumers
+        # Cargo verifies path dependencies against crates.io, where the new Capability ABI does
+        # not exist until the dependency-ordered release. The workspace gates above compile,
+        # test, and lint these consumers against the exact local Capability sources.
+        run: |
+          cargo package --locked --no-verify -p lenso-http-egress
+          cargo package --locked --no-verify -p lenso-web-ingress

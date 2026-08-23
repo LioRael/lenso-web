@@ -1,9 +1,8 @@
-use futures::future::LocalBoxFuture;
-use lenso_kernel::InvocationContext;
+use lenso_kernel::{InvocationContext, NativeRequestFuture};
 
 use crate::{
-    DescribeRequest, DescribeResponse, DescribeResponseRoutesItem, EndpointDescribeInvocationError,
-    EndpointHandleInvocationError, EndpointProvider, HandleRequest, HandleResponse,
+    DescribeRequest, DescribeResponse, DescribeResponseRoutesItem, EndpointDescribe,
+    EndpointHandle, EndpointProvider, HandleRequest,
 };
 
 /// One immutable HTTP route owned by an Endpoint provider.
@@ -53,8 +52,7 @@ impl EndpointRoute {
 }
 
 /// Boxed local handler result used by an authored HTTP Endpoint.
-pub type EndpointFuture =
-    LocalBoxFuture<'static, Result<HandleResponse, EndpointHandleInvocationError>>;
+pub type EndpointFuture = NativeRequestFuture<EndpointHandle>;
 
 /// A statically routed HTTP Endpoint whose declarations and dispatch share one source.
 ///
@@ -77,20 +75,20 @@ where
         &self,
         _context: InvocationContext,
         _request: DescribeRequest,
-    ) -> LocalBoxFuture<'static, Result<DescribeResponse, EndpointDescribeInvocationError>> {
+    ) -> NativeRequestFuture<EndpointDescribe> {
         let routes = T::ROUTES
             .iter()
             .copied()
             .map(EndpointRoute::into_description)
             .collect();
-        Box::pin(async move { Ok(DescribeResponse { routes }) })
+        Box::pin(async move { Ok(Ok(DescribeResponse { routes })) })
     }
 
     fn handle(
         &self,
         context: InvocationContext,
         request: HandleRequest,
-    ) -> LocalBoxFuture<'static, Result<HandleResponse, EndpointHandleInvocationError>> {
+    ) -> NativeRequestFuture<EndpointHandle> {
         self.dispatch(context, request)
     }
 }
@@ -286,11 +284,17 @@ macro_rules! http_endpoint {
                     let route_id = request.route_id.clone();
                     match route_id.as_str() {
                         $(
-                            $route_id => provider.$handler(context, request).await,
+                            $route_id => match provider.$handler(context, request).await {
+                                Ok(response) => Ok(Ok(response)),
+                                Err($crate::EndpointHandleInvocationError::Domain(error)) => {
+                                    Ok(Err(error))
+                                }
+                                Err($crate::EndpointHandleInvocationError::Runtime(error)) => {
+                                    Err(error)
+                                }
+                            },
                         )+
-                        _ => Err($crate::EndpointHandleInvocationError::Domain(
-                            $crate::HandleError::Rejected,
-                        )),
+                        _ => Ok(Err($crate::HandleError::Rejected)),
                     }
                 })
             }

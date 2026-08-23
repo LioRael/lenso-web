@@ -3,10 +3,10 @@ use std::{collections::BTreeSet, sync::Arc};
 use bytes::{Bytes, BytesMut};
 use futures::{FutureExt as _, future::Either};
 use lenso_capability_http_client::{
-    ClientInvocationError, ClientProvider, SendError, SendRequest, SendResponse,
-    SendResponseHeadersItem,
+    Client as ClientSend, ClientInvocationError, ClientProvider, SendError, SendRequest,
+    SendResponse, SendResponseHeadersItem,
 };
-use lenso_kernel::{InvocationContext, RuntimeFailure};
+use lenso_kernel::{InvocationContext, NativeRequestFuture, RuntimeFailure};
 use reqwest::{
     Method, Url,
     header::{HeaderMap, HeaderName, HeaderValue},
@@ -130,32 +130,40 @@ impl ClientProvider for HttpEgressProvider {
         &self,
         context: InvocationContext,
         request: SendRequest,
-    ) -> futures::future::LocalBoxFuture<'static, Result<SendResponse, ClientInvocationError>> {
+    ) -> NativeRequestFuture<ClientSend> {
         let provider = self.clone();
         Box::pin(async move {
-            let request_id = context.request_id();
-            let cancellation = context.cancellation();
-            if cancellation.is_cancelled() {
-                return Err(ClientInvocationError::Runtime(RuntimeFailure::Cancelled {
-                    request_id,
-                }));
-            }
-            let permit = provider.permits.clone().try_acquire_owned().map_err(|_| {
-                ClientInvocationError::Runtime(RuntimeFailure::ResourceExhausted {
-                    capability: lenso_capability_http_client::CAPABILITY_ID,
-                    operation: lenso_capability_http_client::SEND_OPERATION.to_owned(),
-                })
-            })?;
-            let operation = provider.execute(request, permit).fuse();
-            let cancelled = cancellation.cancelled().fuse();
-            futures::pin_mut!(operation, cancelled);
-            match futures::future::select(cancelled, operation).await {
-                Either::Left(((), _)) => {
-                    Err(ClientInvocationError::Runtime(RuntimeFailure::Cancelled {
+            let result = async move {
+                let request_id = context.request_id();
+                let cancellation = context.cancellation();
+                if cancellation.is_cancelled() {
+                    return Err(ClientInvocationError::Runtime(RuntimeFailure::Cancelled {
                         request_id,
-                    }))
+                    }));
                 }
-                Either::Right((result, _)) => result,
+                let permit = provider.permits.clone().try_acquire_owned().map_err(|_| {
+                    ClientInvocationError::Runtime(RuntimeFailure::ResourceExhausted {
+                        capability: lenso_capability_http_client::CAPABILITY_ID,
+                        operation: lenso_capability_http_client::SEND_OPERATION.to_owned(),
+                    })
+                })?;
+                let operation = provider.execute(request, permit).fuse();
+                let cancelled = cancellation.cancelled().fuse();
+                futures::pin_mut!(operation, cancelled);
+                match futures::future::select(cancelled, operation).await {
+                    Either::Left(((), _)) => {
+                        Err(ClientInvocationError::Runtime(RuntimeFailure::Cancelled {
+                            request_id,
+                        }))
+                    }
+                    Either::Right((result, _)) => result,
+                }
+            }
+            .await;
+            match result {
+                Ok(response) => Ok(Ok(response)),
+                Err(ClientInvocationError::Domain(error)) => Ok(Err(error)),
+                Err(ClientInvocationError::Runtime(error)) => Err(error),
             }
         })
     }
@@ -351,12 +359,11 @@ mod tests {
             provider.send(context(1), request()),
             provider.send(context(2), request())
         );
-        assert_eq!(first.unwrap().status, 200);
+        assert_eq!(first.unwrap().unwrap().status, 200);
         assert!(matches!(
             second,
-            Err(ClientInvocationError::Runtime(
-                RuntimeFailure::ResourceExhausted { capability, operation }
-            )) if capability == lenso_capability_http_client::CAPABILITY_ID
+            Err(RuntimeFailure::ResourceExhausted { capability, operation })
+                if capability == lenso_capability_http_client::CAPABILITY_ID
                 && operation == lenso_capability_http_client::SEND_OPERATION
         ));
         upstream.abort();
