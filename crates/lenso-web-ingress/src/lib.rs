@@ -1,5 +1,6 @@
 //! General-purpose linked Rust HTTP Ingress Module for Lenso backends.
 
+mod replication;
 mod routing;
 mod server;
 
@@ -16,6 +17,8 @@ use lenso_kernel::{
 };
 use lenso_native_adapter::{NativeModuleFactory, NativeModuleFactoryContext, NativeModuleInstance};
 use tokio::net::TcpListener;
+
+pub use replication::{WebIngressReplicaMismatch, WebIngressRoute, WebIngressRouteManifest};
 
 pub const PACKAGE_ID: &str = "lenso.web-ingress";
 pub const PACKAGE_VERSION: &str = "0.1.0";
@@ -60,6 +63,7 @@ impl WebIngressConfig {
 #[derive(Debug, Default)]
 struct WebIngressObserver {
     local_address: Cell<Option<SocketAddr>>,
+    route_manifest: RefCell<Option<WebIngressRouteManifest>>,
 }
 
 /// Native Module factory and observable endpoint handle for one Ingress.
@@ -81,6 +85,12 @@ impl WebIngressFactory {
     #[must_use]
     pub fn local_address(&self) -> Option<SocketAddr> {
         self.observer.local_address.get()
+    }
+
+    /// Returns the canonical route manifest after activation succeeds.
+    #[must_use]
+    pub fn route_manifest(&self) -> Option<WebIngressRouteManifest> {
+        self.observer.route_manifest.borrow().clone()
     }
 }
 
@@ -160,9 +170,14 @@ impl ModuleLifecycle for WebIngressLifecycle {
         let readiness = context.readiness();
         let tasks = context.tasks().clone();
         let cancellation = context.cancellation();
+        let observer = self.observer.clone();
         Box::pin(async move {
             let routes =
                 routing::RouteTable::resolve(&dependencies, config.request_timeout).await?;
+            observer
+                .route_manifest
+                .borrow_mut()
+                .replace(routes.manifest().clone());
             tasks
                 .spawn_local(Box::pin(async move {
                     readiness.wait().await;

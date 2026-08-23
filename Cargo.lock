@@ -1039,7 +1039,12 @@ name = "lenso-web-ingress"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "bytes",
  "futures",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "lenso-app-plan",
  "lenso-authoring",
  "lenso-capability-http-endpoint",

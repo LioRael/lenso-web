@@ -68,6 +68,15 @@ async fn routes_bound_backend_modules_and_preserves_http_evidence() {
             .await
             .expect("App should start with two immutable HTTP Endpoint providers");
             let address = ingress.local_address().unwrap();
+            let manifest = ingress
+                .route_manifest()
+                .expect("activation should publish a canonical route manifest");
+            assert_eq!(manifest.routes().len(), 5);
+            assert!(manifest.routes().iter().any(|route| {
+                route.method == "GET"
+                    && route.path == "/orders/{order_id}"
+                    && route.route_id == "orders.read"
+            }));
 
             let orders_response = request(
                 address,
@@ -262,12 +271,9 @@ async fn transport_limits_duplicate_credentials_and_endpoint_failures_are_mapped
             .unwrap();
             let address = ingress.local_address().unwrap();
 
-            assert_eq!(
-                request(address, "POST", "/orders/42", &[], &"a".repeat(33))
-                    .await
-                    .status,
-                413
-            );
+            let too_large = request(address, "POST", "/orders/42", &[], &"a".repeat(33)).await;
+            assert_eq!(too_large.status, 413);
+            assert!(too_large.body.is_empty());
             assert_eq!(
                 request(
                     address,

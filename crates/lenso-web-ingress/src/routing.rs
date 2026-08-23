@@ -1,6 +1,6 @@
 use std::{collections::HashMap, rc::Rc, time::Duration};
 
-use axum::http::Method;
+use http::Method;
 use lenso_capability_http_endpoint::{
     DESCRIBE_OPERATION, DescribeRequest, EndpointDescribe, EndpointHandle, HANDLE_OPERATION,
     HandleRequest, HandleRequestCredential, HandleRequestHeadersItem,
@@ -9,7 +9,7 @@ use lenso_capability_http_endpoint::{
 use lenso_kernel::{CancellationToken, ModuleDependencies, NativeRequestHandle, RuntimeFailure};
 use matchit::Router;
 
-use crate::{module_failure, server::InboundRequest};
+use crate::{WebIngressRoute, WebIngressRouteManifest, module_failure, server::InboundRequest};
 
 #[derive(Debug)]
 struct RouteTarget {
@@ -21,6 +21,7 @@ struct RouteTarget {
 pub(super) struct RouteTable {
     dependencies: ModuleDependencies,
     methods: HashMap<Method, Router<RouteTarget>>,
+    manifest: WebIngressRouteManifest,
     request_timeout: Duration,
 }
 
@@ -45,6 +46,7 @@ impl RouteTable {
             });
         }
         let mut methods = HashMap::<Method, Router<RouteTarget>>::new();
+        let mut manifest = Vec::new();
         for (provider_index, (descriptor, handler)) in
             descriptors.into_iter().zip(handlers).enumerate()
         {
@@ -72,6 +74,11 @@ impl RouteTable {
                         "HTTP Endpoint provider {provider_index} declared an invalid route"
                     )));
                 }
+                manifest.push(WebIngressRoute::new(
+                    method.as_str(),
+                    &route.path,
+                    &route.route_id,
+                ));
                 methods
                     .entry(method.clone())
                     .or_default()
@@ -97,9 +104,14 @@ impl RouteTable {
         }
         Ok(Rc::new(Self {
             dependencies: dependencies.clone(),
+            manifest: WebIngressRouteManifest::new(manifest),
             methods,
             request_timeout,
         }))
+    }
+
+    pub(super) const fn manifest(&self) -> &WebIngressRouteManifest {
+        &self.manifest
     }
 
     pub(super) async fn dispatch(
