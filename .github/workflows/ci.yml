@@ -34,5 +34,5 @@ jobs:
         run: |
           cargo package --locked -p lenso-capability-http-client
           cargo package --locked -p lenso-capability-http-endpoint
-          cargo package --locked --list -p lenso-http-egress
-          cargo package --locked --list -p lenso-web-ingress
+          cargo package --locked -p lenso-http-egress
+          cargo package --locked -p lenso-web-ingress
