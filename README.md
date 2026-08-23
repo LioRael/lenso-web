@@ -22,6 +22,10 @@ route registry.
 - `lenso-http-egress`
 - `lenso-web-ingress`
 
+The Capability crates include generated TypeScript bindings. Those bindings
+import `@lenso/contract-runtime`; TypeScript consumers must declare a
+compatible `@lenso/contract-runtime@^0.1.0` dependency.
+
 `WebIngressConfig` is immutable Module Instance configuration from the Resolved
 App Plan and defaults to an ephemeral loopback listener. App Composition may
 explicitly bind a fixed private or public address; deployment policy stays with
