@@ -35,9 +35,11 @@ jobs:
           cargo package --locked -p lenso-capability-http-client
           cargo package --locked -p lenso-capability-http-endpoint
       - name: Package Capability consumers
+        if: ${{ !contains(github.event.pull_request.labels.*.name, 'release') }}
         # Cargo verifies path dependencies against crates.io, where the new Capability ABI does
         # not exist until the dependency-ordered release. The workspace gates above compile,
-        # test, and lint these consumers against the exact local Capability sources.
+        # test, and lint these consumers against the exact local Capability sources. Release PRs
+        # skip archive preparation until those Capability versions exist in the registry.
         run: |
           cargo package --locked --no-verify -p lenso-http-egress
           cargo package --locked --no-verify -p lenso-web-ingress
