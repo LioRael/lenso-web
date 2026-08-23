@@ -1,6 +1,6 @@
 [package]
 name = "lenso-capability-http-endpoint-macros"
-version = "0.2.0"
+version = "0.1.1"
 description = "Handler attribute macros for Lenso HTTP Endpoint providers."
 edition.workspace = true
 license.workspace = true
