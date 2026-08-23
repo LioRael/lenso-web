@@ -1,0 +1,7 @@
+[workspace]
+# The release PR is the versioning boundary. The release job publishes only
+# packages that have explicitly opted in with `publish = true`.
+release_always = false
+changelog_update = false
+git_tag_name = "{{ package }}-v{{ version }}"
+pr_labels = ["release"]
