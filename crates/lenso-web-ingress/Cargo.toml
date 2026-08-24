@@ -26,8 +26,8 @@ tokio = { workspace = true, features = ["macros"] }
 [dev-dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 hyper = { version = "1", features = ["client", "http2"] }
-lenso-app-plan = "0.1.0"
-lenso-authoring = "0.1.5"
+lenso-app-plan = "0.1.2"
+lenso-authoring = "0.1.7"
 lenso-auth-sdk = "0.1.1"
 lenso-capability-auth = "0.1.1"
 lenso-http-auth = { path = "../lenso-http-auth" }
