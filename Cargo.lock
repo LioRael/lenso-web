@@ -912,9 +912,9 @@ dependencies = [
 
 [[package]]
 name = "lenso-app-plan"
-version = "0.1.0"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43afd42e0158e98fefded2fca95e6e3e461251b667afb11cea1422e9b6d56a8e"
+checksum = "ad6a4da2f09151892d2b0491c823ae28b418df65f7cfd2c857209ebd09afd994"
 dependencies = [
  "serde",
  "serde_json",
@@ -938,13 +938,13 @@ dependencies = [
 
 [[package]]
 name = "lenso-authoring"
-version = "0.1.5"
+version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "caea4b1fbd156216d1e3e7d923db3e94e590b48b0493ed6d75a4ef593aece7aa"
+checksum = "92466a8b7caa983cc1e5df3862aa37aab9d477db05ce47932b3a33228297ab3d"
 dependencies = [
  "lenso-app-plan",
  "lenso-bun-adapter",
- "lenso-contract-codegen 0.5.0",
+ "lenso-contract-codegen 0.5.2",
  "lenso-kernel",
  "lenso-runner",
  "serde",
@@ -987,7 +987,7 @@ name = "lenso-capability-http-client"
 version = "0.2.1"
 dependencies = [
  "futures",
- "lenso-contract-codegen 0.5.0",
+ "lenso-contract-codegen 0.5.2",
  "lenso-contract-runtime",
  "lenso-kernel",
  "serde",
@@ -1001,7 +1001,7 @@ dependencies = [
  "futures",
  "http",
  "lenso-capability-http-endpoint-macros",
- "lenso-contract-codegen 0.5.0",
+ "lenso-contract-codegen 0.5.2",
  "lenso-contract-runtime",
  "lenso-kernel",
  "serde",
@@ -1031,9 +1031,9 @@ dependencies = [
 
 [[package]]
 name = "lenso-contract-codegen"
-version = "0.5.0"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d67b5f69fcc9bd5334988bf3ade6856b741c80b71dc6e2f82aa50afe7239fba7"
+checksum = "6d705a51256e28e1c835c86dc8de83aa4472f01d51ffbdd40345227ec20e10af"
 dependencies = [
  "semver",
  "serde_json",

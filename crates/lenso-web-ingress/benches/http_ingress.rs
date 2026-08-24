@@ -619,13 +619,14 @@ async fn start_lenso(ingress: &WebIngressFactory) -> Result<NativeApp, RuntimeFa
 
 fn project() -> ProjectFile {
     let mut project = ProjectFile::default();
-    project.contracts_mut().push(ContractInput::new(
-        CAPABILITY_ID,
-        DESCRIPTOR_VERSION,
-        "crates/lenso-capability-http-endpoint/capability.json",
-        "crates/lenso-capability-http-endpoint/src/generated.rs",
-        "crates/lenso-capability-http-endpoint/generated/bindings.ts",
-    ));
+    project.contracts_mut().push(
+        ContractInput::descriptor_only(
+            CAPABILITY_ID,
+            DESCRIPTOR_VERSION,
+            "crates/lenso-capability-http-endpoint/capability.json",
+        )
+        .with_rust_projection("crates/lenso-capability-http-endpoint/src/generated.rs"),
+    );
     for package in [FIXTURE_PACKAGE_ID, PACKAGE_ID] {
         project.packages_mut().insert(
             package.to_owned(),

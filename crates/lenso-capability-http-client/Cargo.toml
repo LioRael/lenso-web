@@ -17,7 +17,7 @@ serde.workspace = true
 serde_json.workspace = true
 
 [build-dependencies]
-lenso-contract-codegen = "0.5.0"
+lenso-contract-codegen = "0.5.2"
 
 [lints]
 workspace = true

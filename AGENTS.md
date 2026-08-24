@@ -28,8 +28,9 @@ global Capability discovery, fallback providers, or ambient HTTP authority.
 Auth owns authentication and target Modules own final authorization; Ingress
 only extracts protocol-neutral credential evidence.
 
-The Capability descriptor is authoritative. Regenerate Rust and TypeScript
-bindings through `lenso-contract-codegen`; never hand-edit generated files.
+The Capability descriptor is authoritative. Native Capability crates own only
+their Rust projection; the supported Bun SDK owns the TypeScript projection.
+Regenerate both through `lenso-contract-codegen`; never hand-edit them.
 
 Create task worktrees from the latest `origin/main` with
 `wt switch --create`. Run Cargo through

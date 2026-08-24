@@ -777,13 +777,14 @@ fn project_with_optional_configuration(
     configuration: Option<serde_json::Value>,
 ) -> ProjectFile {
     let mut project = ProjectFile::default();
-    project.contracts_mut().push(ContractInput::new(
-        CAPABILITY_ID,
-        DESCRIPTOR_VERSION,
-        "crates/lenso-capability-http-endpoint/capability.json",
-        "crates/lenso-capability-http-endpoint/src/generated.rs",
-        "crates/lenso-capability-http-endpoint/generated/bindings.ts",
-    ));
+    project.contracts_mut().push(
+        ContractInput::descriptor_only(
+            CAPABILITY_ID,
+            DESCRIPTOR_VERSION,
+            "crates/lenso-capability-http-endpoint/capability.json",
+        )
+        .with_rust_projection("crates/lenso-capability-http-endpoint/src/generated.rs"),
+    );
     for package in providers
         .iter()
         .map(|provider| provider.package)

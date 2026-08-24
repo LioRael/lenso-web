@@ -24,9 +24,9 @@ route registry.
 - `lenso-openapi`
 - `lenso-web-ingress`
 
-The Capability crates include generated TypeScript bindings. Those bindings
-import `@lenso/contract-runtime`; TypeScript consumers must declare a
-compatible `@lenso/contract-runtime@^0.1.0` dependency.
+The Capability crates keep their generated Rust bindings. Bun consumers import
+the matching TypeScript projections from `@lenso/bun`, which locks the source
+revision and verifies each projection independently.
 
 `WebIngressConfig` is immutable Module Instance configuration from the Resolved
 App Plan and defaults to an ephemeral loopback listener. App Composition may

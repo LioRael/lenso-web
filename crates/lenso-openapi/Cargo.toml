@@ -17,7 +17,7 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
-lenso-app-plan = "0.1.0"
+lenso-app-plan = "0.1.2"
 lenso-runner = "0.1.3"
 lenso-web-ingress = { version = "0.3.4", path = "../lenso-web-ingress" }
 tokio = { workspace = true, features = ["io-util", "macros", "rt", "time"] }
