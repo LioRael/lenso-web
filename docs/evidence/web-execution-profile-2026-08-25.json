@@ -106,7 +106,7 @@
     }
   ],
   "saturation": {
-    "concurrency_limit": 32,
+    "concurrency_limits": {"axum": "unbounded", "axum_transport": 32, "bridge": 32, "lenso": 32},
     "requests": 512,
     "handler_delay_milliseconds": 25,
     "client_deadline_milliseconds": 250,

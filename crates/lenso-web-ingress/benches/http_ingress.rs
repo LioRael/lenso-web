@@ -560,8 +560,13 @@ async fn report_saturation(server: &str, address: SocketAddr) {
         .map(|(status, count)| format!("{status}:{count}"))
         .collect::<Vec<_>>()
         .join(",");
+    let concurrency_limit = if server == "axum" {
+        "unbounded".to_owned()
+    } else {
+        BENCHMARK_MAX_CONCURRENT_REQUESTS.to_string()
+    };
     println!(
-        "saturation\t{server}\tlimit={BENCHMARK_MAX_CONCURRENT_REQUESTS}\trequests={SATURATION_REQUESTS}\thandler_delay_ms={}\tclient_deadline_ms={}\tsuccess={success}\thttp_rejected={}\tio_error={io_error}\tclient_timeout={timeout}\telapsed_ms={}",
+        "saturation\t{server}\tlimit={concurrency_limit}\trequests={SATURATION_REQUESTS}\thandler_delay_ms={}\tclient_deadline_ms={}\tsuccess={success}\thttp_rejected={}\tio_error={io_error}\tclient_timeout={timeout}\telapsed_ms={}",
         SATURATION_HANDLER_DELAY.as_millis(),
         SATURATION_CLIENT_DEADLINE.as_millis(),
         if rejected.is_empty() {
