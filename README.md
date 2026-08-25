@@ -374,3 +374,28 @@ LENSO_HTTP_BENCH_BODY_BYTES=0 \
 LENSO_HTTP_BENCH_CONNECTIONS=8 \
 cargo bench -p lenso-web-ingress --bench http_ingress_process
 ```
+
+The Web execution profile adds the decision evidence needed before introducing
+a different Web scheduler:
+
+```sh
+cargo bench -p lenso-web-ingress --bench web_execution_profile
+```
+
+It runs the same echo and delayed handlers through bare Axum, policy-equivalent
+Axum transport, the bounded bridge, and the complete Lenso native path. The
+report includes repeated throughput, unloaded p50/p99 latency, sampled server
+CPU and RSS, and classified saturation outcomes. A two-lane Lenso fixture also
+reports per-lane request counts for one, two, and eight HTTP/1.1 keep-alive
+connections.
+
+`LENSO_HTTP_BENCH_REQUESTS`, `LENSO_HTTP_BENCH_CONNECTIONS`, and
+`LENSO_HTTP_BENCH_SERVER` can reduce the matrix. Process CPU/RSS sampling uses
+the host `ps` command and prints `unavailable` when the host cannot provide it.
+Treat results as host-specific evidence: a work-stealing Web profile is only
+justified if repeated runs show a material user workload problem that cannot be
+fixed at the Ingress routing or operation-granularity boundary. The benchmark
+does not change the portable Kernel or imply live Instance migration.
+
+The checked host-specific sample and its decision are recorded in
+[`docs/evidence/web-execution-profile-2026-08-25.json`](docs/evidence/web-execution-profile-2026-08-25.json).
