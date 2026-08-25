@@ -30,18 +30,18 @@ pub struct DescribeResponse {
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DescribeResponseRoutesItem {
-    #[serde(rename = "method")]
-    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
-    pub method: String,
-    #[serde(rename = "openapi")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub openapi: Option<std::collections::BTreeMap<String, serde_json::Value>>,
-    #[serde(rename = "path")]
-    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
-    pub path: String,
     #[serde(rename = "route_id")]
     #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
     pub route_id: String,
+    #[serde(rename = "method")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub method: String,
+    #[serde(rename = "path")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub path: String,
+    #[serde(rename = "openapi")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub openapi: Option<std::collections::BTreeMap<String, serde_json::Value>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -52,33 +52,43 @@ pub enum DescribeError {
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct HandleRequest {
-    #[serde(rename = "body")]
+    #[serde(rename = "route_id")]
     #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
-    pub body: Bytes,
-    #[serde(rename = "credential")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub credential: Option<HandleRequestCredential>,
-    #[serde(rename = "headers")]
+    pub route_id: String,
+    #[serde(rename = "request_id")]
     #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
-    pub headers: Vec<HandleRequestHeadersItem>,
+    pub request_id: String,
     #[serde(rename = "method")]
     #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
     pub method: String,
     #[serde(rename = "path")]
     #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
     pub path: String,
-    #[serde(rename = "path_parameters")]
-    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
-    pub path_parameters: Vec<HandleRequestPathParametersItem>,
     #[serde(rename = "query")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub query: Option<String>,
-    #[serde(rename = "request_id")]
+    #[serde(rename = "path_parameters")]
     #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
-    pub request_id: String,
-    #[serde(rename = "route_id")]
+    pub path_parameters: Vec<HandleRequestPathParametersItem>,
+    #[serde(rename = "credential")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential: Option<HandleRequestCredential>,
+    #[serde(rename = "headers")]
     #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
-    pub route_id: String,
+    pub headers: Vec<HandleRequestHeadersItem>,
+    #[serde(rename = "body")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub body: Bytes,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct HandleRequestPathParametersItem {
+    #[serde(rename = "name")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub name: String,
+    #[serde(rename = "value")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub value: String,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -102,26 +112,16 @@ pub struct HandleRequestHeadersItem {
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct HandleRequestPathParametersItem {
-    #[serde(rename = "name")]
-    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
-    pub name: String,
-    #[serde(rename = "value")]
-    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
-    pub value: String,
-}
-
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct HandleResponse {
-    #[serde(rename = "body")]
-    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
-    pub body: Bytes,
-    #[serde(rename = "headers")]
-    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
-    pub headers: Vec<HandleResponseHeadersItem>,
     #[serde(rename = "status")]
     #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
     pub status: i64,
+    #[serde(rename = "headers")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub headers: Vec<HandleResponseHeadersItem>,
+    #[serde(rename = "body")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub body: Bytes,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]

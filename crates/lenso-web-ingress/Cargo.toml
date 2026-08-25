@@ -28,8 +28,8 @@ axum = { version = "0.8", default-features = false, features = ["http1", "tokio"
 hyper = { version = "1", features = ["client", "http2"] }
 lenso-app-plan = "0.1.2"
 lenso-authoring = "0.1.7"
-lenso-auth-sdk = "0.1.1"
-lenso-capability-auth = "0.1.1"
+lenso-auth-sdk = { version = "0.2.0", git = "https://github.com/LioRael/lenso-auth-module", rev = "b9af1edac82b90396b6888acb69f58b4d6bf25f0" }
+lenso-capability-auth = { version = "0.1.1", git = "https://github.com/LioRael/lenso-auth-module", rev = "b9af1edac82b90396b6888acb69f58b4d6bf25f0" }
 lenso-http-auth = { path = "../lenso-http-auth" }
 lenso-runner = "0.1.3"
 serde_json.workspace = true

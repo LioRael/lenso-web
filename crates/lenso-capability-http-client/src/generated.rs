@@ -17,18 +17,18 @@ use lenso_contract_runtime::{decode_portable_json, encode_portable_json};
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SendRequest {
-    #[serde(rename = "body")]
-    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
-    pub body: Bytes,
-    #[serde(rename = "headers")]
-    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
-    pub headers: Vec<SendRequestHeadersItem>,
     #[serde(rename = "method")]
     #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
     pub method: String,
     #[serde(rename = "url")]
     #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
     pub url: String,
+    #[serde(rename = "headers")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub headers: Vec<SendRequestHeadersItem>,
+    #[serde(rename = "body")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub body: Bytes,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -43,15 +43,15 @@ pub struct SendRequestHeadersItem {
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SendResponse {
-    #[serde(rename = "body")]
-    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
-    pub body: Bytes,
-    #[serde(rename = "headers")]
-    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
-    pub headers: Vec<SendResponseHeadersItem>,
     #[serde(rename = "status")]
     #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
     pub status: i64,
+    #[serde(rename = "headers")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub headers: Vec<SendResponseHeadersItem>,
+    #[serde(rename = "body")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub body: Bytes,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
