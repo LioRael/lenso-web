@@ -13,7 +13,7 @@ use lenso_kernel::{Kernel, NativeRequestEndpoint, RuntimeFailure, ShutdownOutcom
 use lenso_native_adapter::{
     NativeModuleFactory, NativeModuleFactoryContext, NativeModuleInstance, NativeModuleRegistry,
 };
-use lenso_openapi::{OpenApiFactory, PACKAGE_ID as OPENAPI_PACKAGE_ID};
+use lenso_openapi::PACKAGE_ID as OPENAPI_PACKAGE_ID;
 use lenso_runner::TokioDriver;
 use lenso_web_ingress::{PACKAGE_ID as INGRESS_PACKAGE_ID, WebIngressFactory};
 use tokio::{
@@ -76,10 +76,10 @@ async fn start(plan: ResolvedAppPlan, ingress: WebIngressFactory) -> lenso_kerne
         plan,
         TokioDriver::new(),
         NativeModuleRegistry::new()
+            .with_linked_factories()
             .with_factory(ingress)
             .with_factory(OrdersFactory)
-            .with_factory(StatusFactory)
-            .with_factory(OpenApiFactory),
+            .with_factory(StatusFactory),
     )
     .await
     .unwrap()

@@ -2,12 +2,13 @@ use std::{collections::HashMap, rc::Rc, time::Duration};
 
 use futures::future::{Either, select};
 use http::Method;
+use lenso::prelude::ManyPort;
 use lenso_capability_http_endpoint::{
-    DESCRIBE_OPERATION, DescribeRequest, EndpointDescribe, EndpointHandle, HANDLE_OPERATION,
-    HandleRequest, HandleRequestCredential, HandleRequestHeadersItem,
-    HandleRequestPathParametersItem, HandleResponse,
+    DescribeRequest, EndpointClient, EndpointDescribeInvocationError,
+    EndpointHandleInvocationError, HandleRequest, HandleRequestCredential,
+    HandleRequestHeadersItem, HandleRequestPathParametersItem, HandleResponse,
 };
-use lenso_kernel::{CancellationToken, ModuleDependencies, NativeRequestHandle, RuntimeFailure};
+use lenso_kernel::{CancellationToken, ModuleDependencies, RuntimeFailure};
 use matchit::Router;
 
 use crate::{WebIngressRoute, WebIngressRouteManifest, module_failure, server::InboundRequest};
@@ -15,12 +16,13 @@ use crate::{WebIngressRoute, WebIngressRouteManifest, module_failure, server::In
 #[derive(Debug)]
 struct RouteTarget {
     route_id: String,
-    handler: Rc<NativeRequestHandle<EndpointHandle>>,
+    provider_index: usize,
 }
 
 #[derive(Debug)]
 pub(super) struct RouteTable {
     dependencies: ModuleDependencies,
+    providers: ManyPort<EndpointClient>,
     methods: HashMap<Method, Router<RouteTarget>>,
     manifest: WebIngressRouteManifest,
     request_timeout: Duration,
@@ -37,30 +39,22 @@ pub(super) enum DispatchError {
 
 impl RouteTable {
     pub(super) async fn resolve(
+        providers: ManyPort<EndpointClient>,
         dependencies: &ModuleDependencies,
         request_timeout: Duration,
     ) -> Result<Rc<Self>, RuntimeFailure> {
-        let descriptors = dependencies.many::<EndpointDescribe>()?;
-        let handlers = dependencies.many::<EndpointHandle>()?;
-        if descriptors.len() != handlers.len() {
-            return Err(RuntimeFailure::Internal {
-                detail: "HTTP Endpoint describe/handle bindings are inconsistent".to_owned(),
-            });
-        }
         let mut methods = HashMap::<Method, Router<RouteTarget>>::new();
         let mut manifest = Vec::new();
-        for (provider_index, (descriptor, handler)) in
-            descriptors.into_iter().zip(handlers).enumerate()
-        {
-            let description = descriptor
-                .invoke(DESCRIBE_OPERATION, DescribeRequest {})
-                .await?
-                .map_err(|error| {
-                    module_failure(format!(
+        for (provider_index, provider) in providers.iter().enumerate() {
+            let description = provider
+                .describe(DescribeRequest {})
+                .await
+                .map_err(|error| match error {
+                    EndpointDescribeInvocationError::Domain(error) => module_failure(format!(
                         "HTTP Endpoint provider {provider_index} rejected its description: {error:?}"
-                    ))
+                    )),
+                    EndpointDescribeInvocationError::Runtime(error) => error,
                 })?;
-            let handler = Rc::new(handler);
             for route in description.routes {
                 let method = route.method.trim().to_ascii_uppercase();
                 let Ok(method) = Method::from_bytes(method.as_bytes()) else {
@@ -88,7 +82,7 @@ impl RouteTable {
                         route.path.clone(),
                         RouteTarget {
                             route_id: route.route_id,
-                            handler: handler.clone(),
+                            provider_index,
                         },
                     )
                     .map_err(|error| {
@@ -106,6 +100,7 @@ impl RouteTable {
         }
         Ok(Rc::new(Self {
             dependencies: dependencies.clone(),
+            providers,
             manifest: WebIngressRouteManifest::new(manifest),
             methods,
             request_timeout,
@@ -144,7 +139,7 @@ impl RouteTable {
             })
             .collect();
         let route_id = matched.value.route_id.clone();
-        let handler = matched.value.handler.clone();
+        let provider_index = matched.value.provider_index;
         let cancellation = CancellationToken::new();
         let context = self
             .dependencies
@@ -158,8 +153,7 @@ impl RouteTable {
                 () = app_cancellation.cancelled() => {}
             }
         };
-        let invocation = handler.invoke_with_context(
-            HANDLE_OPERATION,
+        let invocation = self.providers[provider_index].handle_with_context(
             context,
             HandleRequest {
                 body: request.body.into(),
@@ -193,12 +187,13 @@ impl RouteTable {
                 invocation.await
             }
         };
-        outcome
-            .map_err(|error| match error {
-                RuntimeFailure::DeadlineExceeded { .. } => DispatchError::TimedOut,
-                _ => DispatchError::Unavailable,
-            })?
-            .map_err(|_| DispatchError::Rejected)
+        outcome.map_err(|error| match error {
+            EndpointHandleInvocationError::Domain(_) => DispatchError::Rejected,
+            EndpointHandleInvocationError::Runtime(RuntimeFailure::DeadlineExceeded { .. }) => {
+                DispatchError::TimedOut
+            }
+            EndpointHandleInvocationError::Runtime(_) => DispatchError::Unavailable,
+        })
     }
 
     fn allowed_methods(&self, path: &str) -> Vec<Method> {

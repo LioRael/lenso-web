@@ -8,17 +8,21 @@ publish.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[package.metadata.lenso]
+package-id = "lenso.openapi"
+
 [dependencies]
 futures.workspace = true
+lenso = { version = "0.4.0", git = "https://github.com/LioRael/lenso-runtime-rust.git", rev = "48cf37b6475a0dbbe4ad8492888ed7c6c17abae4" }
 lenso-capability-http-endpoint = { version = "0.2.5", path = "../lenso-capability-http-endpoint" }
-lenso-kernel = "0.1.4"
-lenso-native-adapter = "0.1.1"
+lenso-kernel = "0.1.9"
+lenso-native-adapter = { version = "0.1.2", git = "https://github.com/LioRael/lenso-runtime-rust.git", rev = "48cf37b6475a0dbbe4ad8492888ed7c6c17abae4" }
 serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
-lenso-app-plan = "0.1.2"
-lenso-runner = "0.1.3"
+lenso-app-plan = "0.1.4"
+lenso-runner = { version = "0.1.6", git = "https://github.com/LioRael/lenso-runtime-rust.git", rev = "48cf37b6475a0dbbe4ad8492888ed7c6c17abae4" }
 lenso-web-ingress = { version = "0.3.5", path = "../lenso-web-ingress" }
 tokio = { workspace = true, features = ["io-util", "macros", "rt", "time"] }
 

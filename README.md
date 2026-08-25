@@ -24,6 +24,20 @@ route registry.
 - `lenso-openapi`
 - `lenso-web-ingress`
 
+`lenso-http-egress` and `lenso-openapi` use the ordinary source-first native
+authoring path: struct Modules declare configuration, typed Capability Ports,
+provided Capabilities, and lifecycle hooks; linked factory registration and
+Provider endpoints are generated. App Composition still decides whether an
+Instance exists and exactly which bindings it receives.
+
+`lenso-web-ingress` remains the deliberate compatibility exception. It is an
+endpoint-free `many lenso.http.endpoint@1` consumer and its public Factory also
+accepts Host-owned middleware, listener observation, and lane-replica handles.
+The current struct authoring macro cannot inject those Host-only values into a
+consumer-only Module. Ingress routing nevertheless uses the generated typed
+`ManyPort<EndpointClient>`; raw request handles are confined to generated
+Capability projection code and test fixtures.
+
 The Capability crates keep their generated Rust bindings. Bun consumers import
 the matching TypeScript projections from `@lenso/bun`, which locks the source
 revision and verifies each projection independently.

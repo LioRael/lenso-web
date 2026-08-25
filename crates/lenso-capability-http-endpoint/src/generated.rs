@@ -3,12 +3,25 @@ use std::{fmt, rc::Rc};
 use futures::future::LocalBoxFuture;
 use lenso_kernel::{InvocationContext, ModuleDependencies, NativeRequestEndpoint, NativeRequestFuture, NativeRequestHandle, RequestCapability, RuntimeFailure};
 
+use lenso_module_authoring::{BoundCapabilityClient, CapabilityClient, CapabilityClientMany};
 pub const CAPABILITY_ID: &str = "lenso.http.endpoint@1";
 pub const DESCRIPTOR_VERSION: &str = "1.1.0";
 pub const PORTABLE: bool = true;
 pub const CROSS_LANE_TRANSFER: bool = true;
 pub const ENDPOINT_CAPABILITY_ID: &str = CAPABILITY_ID;
 pub const ENDPOINT_DESCRIPTOR_VERSION: &str = DESCRIPTOR_VERSION;
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __lenso_provided_endpoint { () => { "{\"capability_id\":\"lenso.http.endpoint@1\",\"descriptor_version\":\"1.1.0\",\"operations\":[\"describe\",\"handle\"],\"operation_kinds\":{},\"default_admission\":{\"queue_capacity\":0,\"max_concurrency\":1},\"operation_admissions\":{},\"event_admission\":null,\"cross_lane_transfer\":true}" }; }
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __lenso_required_endpoint_client { () => { "{\"capability_id\":\"lenso.http.endpoint@1\",\"descriptor_version\":\"1.1.0\",\"cardinality\":\"one\"}" }; }
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __lenso_required_many_endpoint_client { () => { "{\"capability_id\":\"lenso.http.endpoint@1\",\"descriptor_version\":\"1.1.0\",\"cardinality\":\"many\"}" }; }
 
 pub const DESCRIBE_OPERATION: &str = "describe";
 pub const HANDLE_OPERATION: &str = "handle";
@@ -30,18 +43,18 @@ pub struct DescribeResponse {
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DescribeResponseRoutesItem {
-    #[serde(rename = "route_id")]
-    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
-    pub route_id: String,
     #[serde(rename = "method")]
     #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
     pub method: String,
-    #[serde(rename = "path")]
-    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
-    pub path: String,
     #[serde(rename = "openapi")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub openapi: Option<std::collections::BTreeMap<String, serde_json::Value>>,
+    #[serde(rename = "path")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub path: String,
+    #[serde(rename = "route_id")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub route_id: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -52,43 +65,33 @@ pub enum DescribeError {
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct HandleRequest {
-    #[serde(rename = "route_id")]
+    #[serde(rename = "body")]
     #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
-    pub route_id: String,
-    #[serde(rename = "request_id")]
-    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
-    pub request_id: String,
-    #[serde(rename = "method")]
-    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
-    pub method: String,
-    #[serde(rename = "path")]
-    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
-    pub path: String,
-    #[serde(rename = "query")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub query: Option<String>,
-    #[serde(rename = "path_parameters")]
-    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
-    pub path_parameters: Vec<HandleRequestPathParametersItem>,
+    pub body: Bytes,
     #[serde(rename = "credential")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credential: Option<HandleRequestCredential>,
     #[serde(rename = "headers")]
     #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
     pub headers: Vec<HandleRequestHeadersItem>,
-    #[serde(rename = "body")]
+    #[serde(rename = "method")]
     #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
-    pub body: Bytes,
-}
-
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct HandleRequestPathParametersItem {
-    #[serde(rename = "name")]
+    pub method: String,
+    #[serde(rename = "path")]
     #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
-    pub name: String,
-    #[serde(rename = "value")]
+    pub path: String,
+    #[serde(rename = "path_parameters")]
     #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
-    pub value: String,
+    pub path_parameters: Vec<HandleRequestPathParametersItem>,
+    #[serde(rename = "query")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    #[serde(rename = "request_id")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub request_id: String,
+    #[serde(rename = "route_id")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub route_id: String,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -112,16 +115,26 @@ pub struct HandleRequestHeadersItem {
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct HandleRequestPathParametersItem {
+    #[serde(rename = "name")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub name: String,
+    #[serde(rename = "value")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub value: String,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct HandleResponse {
-    #[serde(rename = "status")]
-    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
-    pub status: i64,
-    #[serde(rename = "headers")]
-    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
-    pub headers: Vec<HandleResponseHeadersItem>,
     #[serde(rename = "body")]
     #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
     pub body: Bytes,
+    #[serde(rename = "headers")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub headers: Vec<HandleResponseHeadersItem>,
+    #[serde(rename = "status")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub status: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -294,9 +307,91 @@ pub fn decode_handle_response(wire: &str) -> Result<HandleResponse, serde_json::
 pub fn encode_handle_error(value: &HandleError) -> Result<String, serde_json::Error> { encode_portable_json(value) }
 pub fn decode_handle_error(wire: &str) -> Result<HandleError, serde_json::Error> { decode_portable_json(wire) }
 
+#[doc(hidden)]
+pub trait __LensoIntoEndpointDescribeResult {
+    fn __lenso_into_result(self) -> Result<Result<DescribeResponse, DescribeError>, RuntimeFailure>;
+}
+impl __LensoIntoEndpointDescribeResult for Result<DescribeResponse, DescribeError> {
+    fn __lenso_into_result(self) -> Result<Result<DescribeResponse, DescribeError>, RuntimeFailure> { Ok(self) }
+}
+impl __LensoIntoEndpointDescribeResult for Result<Result<DescribeResponse, DescribeError>, RuntimeFailure> {
+    fn __lenso_into_result(self) -> Result<Result<DescribeResponse, DescribeError>, RuntimeFailure> { self }
+}
+impl __LensoIntoEndpointDescribeResult for Result<DescribeResponse, lenso_module_authoring::ModuleError<DescribeError, RuntimeFailure>> {
+    fn __lenso_into_result(self) -> Result<Result<DescribeResponse, DescribeError>, RuntimeFailure> {
+        match self {
+            Ok(value) => Ok(Ok(value)),
+            Err(lenso_module_authoring::ModuleError::Domain(error)) => Ok(Err(error)),
+            Err(lenso_module_authoring::ModuleError::Runtime(error)) => Err(error),
+        }
+    }
+}
+impl __LensoIntoEndpointDescribeResult for Result<DescribeResponse, EndpointDescribeInvocationError> {
+    fn __lenso_into_result(self) -> Result<Result<DescribeResponse, DescribeError>, RuntimeFailure> {
+        match self {
+            Ok(value) => Ok(Ok(value)),
+            Err(EndpointDescribeInvocationError::Domain(error)) => Ok(Err(error)),
+            Err(EndpointDescribeInvocationError::Runtime(error)) => Err(error),
+        }
+    }
+}
+
+#[doc(hidden)]
+pub trait __LensoIntoEndpointHandleResult {
+    fn __lenso_into_result(self) -> Result<Result<HandleResponse, HandleError>, RuntimeFailure>;
+}
+impl __LensoIntoEndpointHandleResult for Result<HandleResponse, HandleError> {
+    fn __lenso_into_result(self) -> Result<Result<HandleResponse, HandleError>, RuntimeFailure> { Ok(self) }
+}
+impl __LensoIntoEndpointHandleResult for Result<Result<HandleResponse, HandleError>, RuntimeFailure> {
+    fn __lenso_into_result(self) -> Result<Result<HandleResponse, HandleError>, RuntimeFailure> { self }
+}
+impl __LensoIntoEndpointHandleResult for Result<HandleResponse, lenso_module_authoring::ModuleError<HandleError, RuntimeFailure>> {
+    fn __lenso_into_result(self) -> Result<Result<HandleResponse, HandleError>, RuntimeFailure> {
+        match self {
+            Ok(value) => Ok(Ok(value)),
+            Err(lenso_module_authoring::ModuleError::Domain(error)) => Ok(Err(error)),
+            Err(lenso_module_authoring::ModuleError::Runtime(error)) => Err(error),
+        }
+    }
+}
+impl __LensoIntoEndpointHandleResult for Result<HandleResponse, EndpointHandleInvocationError> {
+    fn __lenso_into_result(self) -> Result<Result<HandleResponse, HandleError>, RuntimeFailure> {
+        match self {
+            Ok(value) => Ok(Ok(value)),
+            Err(EndpointHandleInvocationError::Domain(error)) => Ok(Err(error)),
+            Err(EndpointHandleInvocationError::Runtime(error)) => Err(error),
+        }
+    }
+}
+
 pub trait EndpointProvider: fmt::Debug + 'static {
     fn describe(&self, context: InvocationContext, request: DescribeRequest) -> NativeRequestFuture<EndpointDescribe>;
     fn handle(&self, context: InvocationContext, request: HandleRequest) -> NativeRequestFuture<EndpointHandle>;
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __lenso_native_lower_endpoint {
+    ($module:ty, $support:path) => {
+        use $support as __LensoNativeSupportEndpoint;
+        impl $crate::EndpointProvider for $module {
+        fn describe(&self, context: __LensoNativeSupportEndpoint::InvocationContext, request: $crate::DescribeRequest) -> __LensoNativeSupportEndpoint::NativeRequestFuture<$crate::EndpointDescribe> {
+            let module = self.clone();
+            ::std::boxed::Box::pin(async move {
+                let result = <$module>::describe(&module, context, request).await;
+                $crate::__LensoIntoEndpointDescribeResult::__lenso_into_result(result)
+            })
+        }
+        fn handle(&self, context: __LensoNativeSupportEndpoint::InvocationContext, request: $crate::HandleRequest) -> __LensoNativeSupportEndpoint::NativeRequestFuture<$crate::EndpointHandle> {
+            let module = self.clone();
+            ::std::boxed::Box::pin(async move {
+                let result = <$module>::handle(&module, context, request).await;
+                $crate::__LensoIntoEndpointHandleResult::__lenso_into_result(result)
+            })
+        }
+        }
+    };
 }
 
 #[derive(Debug)]
@@ -353,6 +448,36 @@ impl<P: EndpointProvider> NativeRequestEndpoint for EndpointEndpoint<P> {
     }
 }
 
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __lenso_native_endpoints_endpoint {
+    ($provider:expr, $support:path) => {{
+        use $support as __LensoNativeSupport;
+        let endpoint = ::std::rc::Rc::new($crate::EndpointEndpoint::new($provider));
+        (
+            vec![endpoint.clone() as ::std::rc::Rc<dyn __LensoNativeSupport::NativeRequestEndpoint>],
+            vec![],
+            vec![],
+        )
+    }};
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __lenso_native_provide_endpoint {
+    ($provider:expr, $lifecycle:expr, $support:path) => {{
+        use $support as __LensoNativeSupport;
+        let (request_endpoints, stream_endpoints, event_endpoints) =
+            $crate::__lenso_native_endpoints_endpoint!($provider, $support);
+        __LensoNativeSupport::NativeModuleInstance::with_all_endpoints(
+            request_endpoints,
+            stream_endpoints,
+            event_endpoints,
+            $lifecycle,
+        )
+    }};
+}
+
 #[derive(Debug)]
 pub struct EndpointClient {
     describe: NativeRequestHandle<EndpointDescribe>,
@@ -360,10 +485,7 @@ pub struct EndpointClient {
 }
 impl EndpointClient {
     pub fn from_dependencies(dependencies: &ModuleDependencies) -> Result<Self, RuntimeFailure> {
-        Ok(Self {
-            describe: dependencies.one::<EndpointDescribe>()?,
-            handle: dependencies.one::<EndpointHandle>()?,
-        })
+        <Self as CapabilityClient>::from_dependencies(dependencies)
     }
 
     pub async fn describe(&self, request: DescribeRequest) -> Result<DescribeResponse, EndpointDescribeInvocationError> {
@@ -388,6 +510,48 @@ impl EndpointClient {
         self.handle.invoke_with_context(HANDLE_OPERATION, context, request).await
             .map_err(EndpointHandleInvocationError::Runtime)?
             .map_err(EndpointHandleInvocationError::Domain)
+    }
+}
+
+impl CapabilityClient for EndpointClient {
+    type Dependencies = ModuleDependencies;
+    type Error = RuntimeFailure;
+
+    const CAPABILITY_ID: &'static str = CAPABILITY_ID;
+    const DESCRIPTOR_VERSION: &'static str = DESCRIPTOR_VERSION;
+
+    fn from_dependencies(dependencies: &ModuleDependencies) -> Result<Self, RuntimeFailure> {
+        Ok(Self {
+            describe: dependencies.one::<EndpointDescribe>()?,
+            handle: dependencies.one::<EndpointHandle>()?,
+        })
+    }
+
+    fn already_connected() -> RuntimeFailure {
+        RuntimeFailure::ModuleFailure {
+            detail: format!("Capability Port {CAPABILITY_ID} was connected more than once"),
+        }
+    }
+}
+
+impl CapabilityClientMany for EndpointClient {
+    fn many_from_dependencies(
+        dependencies: &ModuleDependencies,
+    ) -> Result<Vec<BoundCapabilityClient<Self>>, RuntimeFailure> {
+        dependencies
+            .bindings()
+            .iter()
+            .filter(|binding| binding.capability_id() == CAPABILITY_ID)
+            .map(|binding| {
+                Ok(BoundCapabilityClient::new(
+                    binding.provider_instance(),
+                    Self {
+                    describe: binding.handle().ok_or(RuntimeFailure::Unavailable { capability: CAPABILITY_ID })?.typed::<EndpointDescribe>()?,
+                    handle: binding.handle().ok_or(RuntimeFailure::Unavailable { capability: CAPABILITY_ID })?.typed::<EndpointHandle>()?,
+                    },
+                ))
+            })
+            .collect()
     }
 }
 
