@@ -9,7 +9,7 @@ use lenso_capability_http_client::{
     CAPABILITY_ID, Client, DESCRIPTOR_VERSION, SEND_OPERATION, SendError, SendRequest,
     SendRequestHeadersItem,
 };
-use lenso_http_egress::{HttpEgressConfig, HttpEgressFactory, PACKAGE_ID};
+use lenso_http_egress::{HttpEgressConfig, PACKAGE_ID};
 use lenso_kernel::{Kernel, RuntimeFailure, ShutdownOutcome};
 use lenso_native_adapter::{
     NativeModuleFactory, NativeModuleFactoryContext, NativeModuleInstance, NativeModuleRegistry,
@@ -187,8 +187,8 @@ async fn start(config: HttpEgressConfig) -> lenso_kernel::NativeApp {
         plan(&config),
         TokioDriver::new(),
         NativeModuleRegistry::new()
-            .with_factory(CallerFactory)
-            .with_factory(HttpEgressFactory),
+            .with_linked_factories()
+            .with_factory(CallerFactory),
     )
     .await
     .unwrap()

@@ -9,76 +9,44 @@ mod config;
 
 use std::{cell::RefCell, rc::Rc};
 
+use lenso::prelude::ManyPort;
+use lenso::{ActivateContext, DeactivateContext, Lifecycle, provides};
+use lenso_capability_http_endpoint as http_endpoint;
 use lenso_capability_http_endpoint::{
-    DESCRIBE_OPERATION, DescribeError, DescribeRequest, DescribeResponse,
-    DescribeResponseRoutesItem, EndpointDescribe, EndpointEndpoint, EndpointHandle,
-    EndpointProvider, HandleError, HandleRequest, HandleResponse, HandleResponseHeadersItem,
+    DescribeError, DescribeRequest, DescribeResponse, DescribeResponseRoutesItem, EndpointDescribe,
+    EndpointHandle, EndpointProvider, HandleError, HandleRequest, HandleResponse,
+    HandleResponseHeadersItem,
 };
-use lenso_kernel::{
-    ActivateContext, DeactivateContext, InvocationContext, ModuleFuture, ModuleLifecycle,
-    NativeRequestEndpoint, NativeRequestFuture, RuntimeFailure,
-};
-use lenso_native_adapter::{NativeModuleFactory, NativeModuleFactoryContext, NativeModuleInstance};
+use lenso_kernel::{InvocationContext, NativeRequestFuture, RuntimeFailure};
 use serde_json::json;
 
 pub use config::OpenApiConfig;
 
-pub const PACKAGE_ID: &str = "lenso.openapi";
-pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const DOCUMENT_ROUTE_ID: &str = "lenso.openapi.document";
 
-#[derive(Clone, Debug, Default)]
-pub struct OpenApiFactory;
-
-impl NativeModuleFactory for OpenApiFactory {
-    fn package_id(&self) -> &'static str {
-        PACKAGE_ID
-    }
-
-    fn package_version(&self) -> &'static str {
-        PACKAGE_VERSION
-    }
-
-    fn instantiate(
-        &self,
-        context: NativeModuleFactoryContext<'_>,
-    ) -> Result<NativeModuleInstance, RuntimeFailure> {
-        if context.entrypoint() != "default" {
-            return Err(RuntimeFailure::InvalidResolvedPlan {
-                detail: format!("unsupported OpenAPI entrypoint {}", context.entrypoint()),
-            });
-        }
-        let config =
-            serde_json::from_str::<OpenApiConfig>(context.configuration()).map_err(|error| {
-                RuntimeFailure::InvalidResolvedPlan {
-                    detail: format!("OpenAPI configuration is invalid: {error}"),
-                }
-            })?;
-        config
-            .validate()
-            .map_err(|detail| RuntimeFailure::InvalidResolvedPlan {
-                detail: format!("OpenAPI configuration is invalid: {detail}"),
-            })?;
-        let document = Rc::new(RefCell::new(None));
-        let provider = OpenApiEndpoint {
-            config: config.clone(),
-            document: document.clone(),
-        };
-        let endpoint = Rc::new(EndpointEndpoint::new(provider)) as Rc<dyn NativeRequestEndpoint>;
-        Ok(NativeModuleInstance::with_lifecycle(
-            vec![endpoint],
-            OpenApiLifecycle { config, document },
-        ))
-    }
+fn validate_config(config: &OpenApiConfig) -> Result<(), RuntimeFailure> {
+    config
+        .validate()
+        .map_err(|detail| RuntimeFailure::InvalidResolvedPlan {
+            detail: format!("OpenAPI configuration is invalid: {detail}"),
+        })
 }
 
+#[lenso::module(
+    lifecycle,
+    validate = validate_config,
+    configuration_schema = "config.schema.json"
+)]
 #[derive(Clone, Debug)]
-struct OpenApiEndpoint {
+struct OpenApiModule {
+    #[config]
     config: OpenApiConfig,
+    endpoints: ManyPort<http_endpoint::EndpointClient>,
     document: Rc<RefCell<Option<Vec<u8>>>>,
 }
 
-impl EndpointProvider for OpenApiEndpoint {
+#[provides(http_endpoint::Endpoint)]
+impl EndpointProvider for OpenApiModule {
     fn describe(
         &self,
         _context: InvocationContext,
@@ -144,36 +112,30 @@ impl EndpointProvider for OpenApiEndpoint {
     }
 }
 
-#[derive(Debug)]
-struct OpenApiLifecycle {
-    config: OpenApiConfig,
-    document: Rc<RefCell<Option<Vec<u8>>>>,
-}
-
-impl ModuleLifecycle for OpenApiLifecycle {
-    fn activate(&self, context: ActivateContext) -> ModuleFuture {
-        let config = self.config.clone();
-        let document = self.document.clone();
-        let dependencies = context.dependencies().clone();
-        Box::pin(async move {
-            let descriptors = dependencies.many::<EndpointDescribe>()?;
-            let mut descriptions = Vec::with_capacity(descriptors.len());
-            for (provider_index, descriptor) in descriptors.into_iter().enumerate() {
-                let description = descriptor
-                    .invoke(DESCRIBE_OPERATION, DescribeRequest {})
-                    .await?
-                    .map_err(|error| describe_failure(provider_index, &error))?;
-                descriptions.push(description);
-            }
-            let assembled = assemble::assemble(&config, descriptions).map_err(module_failure)?;
-            document.borrow_mut().replace(assembled);
-            Ok(())
-        })
+#[allow(unknown_lints, clippy::unused_async_trait_impl)]
+impl Lifecycle for OpenApiModule {
+    async fn activate(&self, _context: ActivateContext) -> Result<(), RuntimeFailure> {
+        let mut descriptions = Vec::with_capacity(self.endpoints.len());
+        for (provider_index, endpoint) in self.endpoints.iter().enumerate() {
+            let description = endpoint
+                .describe(DescribeRequest {})
+                .await
+                .map_err(|error| match error {
+                    http_endpoint::EndpointDescribeInvocationError::Domain(error) => {
+                        describe_failure(provider_index, &error)
+                    }
+                    http_endpoint::EndpointDescribeInvocationError::Runtime(error) => error,
+                })?;
+            descriptions.push(description);
+        }
+        let assembled = assemble::assemble(&self.config, descriptions).map_err(module_failure)?;
+        self.document.borrow_mut().replace(assembled);
+        Ok(())
     }
 
-    fn deactivate(&self, _context: DeactivateContext) -> ModuleFuture {
+    async fn deactivate(&self, _context: DeactivateContext) -> Result<(), RuntimeFailure> {
         self.document.borrow_mut().take();
-        Box::pin(futures::future::ready(Ok(())))
+        Ok(())
     }
 }
 

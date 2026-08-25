@@ -13,6 +13,8 @@ use std::{
     rc::Rc,
 };
 
+use lenso::prelude::ManyPort;
+use lenso_capability_http_endpoint::EndpointClient;
 use lenso_kernel::{
     ActivateContext, ModuleFuture, ModuleLifecycle, PrepareContext, RuntimeFailure,
 };
@@ -129,6 +131,7 @@ impl NativeModuleFactory for WebIngressFactory {
             Vec::new(),
             WebIngressLifecycle {
                 config,
+                endpoints: ManyPort::default(),
                 middleware: self.middleware.clone(),
                 observer: self.observer.clone(),
                 listener: Rc::new(RefCell::new(None)),
@@ -140,6 +143,7 @@ impl NativeModuleFactory for WebIngressFactory {
 
 struct WebIngressLifecycle {
     config: WebIngressConfig,
+    endpoints: ManyPort<EndpointClient>,
     middleware: Vec<Rc<dyn WebIngressMiddleware>>,
     observer: Rc<WebIngressObserver>,
     listener: Rc<RefCell<Option<TcpListener>>>,
@@ -190,13 +194,16 @@ impl ModuleLifecycle for WebIngressLifecycle {
         let config = self.config.clone();
         let middleware = self.middleware.clone();
         let dependencies = context.dependencies().clone();
+        let endpoints = self.endpoints.clone();
         let readiness = context.readiness();
         let tasks = context.tasks().clone();
         let cancellation = context.cancellation();
         let observer = self.observer.clone();
         Box::pin(async move {
+            endpoints.connect(&dependencies)?;
             let routes =
-                routing::RouteTable::resolve(&dependencies, config.request_timeout()).await?;
+                routing::RouteTable::resolve(endpoints, &dependencies, config.request_timeout())
+                    .await?;
             observer
                 .route_manifest
                 .borrow_mut()

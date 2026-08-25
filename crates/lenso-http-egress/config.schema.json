@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["allowed_origins"],
+  "properties": {
+    "allowed_origins": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "items": { "type": "string" }
+    },
+    "max_request_body_bytes": { "type": "integer" },
+    "max_request_head_bytes": { "type": "integer" },
+    "max_response_body_bytes": { "type": "integer" },
+    "max_response_head_bytes": { "type": "integer" },
+    "max_concurrent_requests": { "type": "integer" },
+    "connect_timeout_millis": { "type": "integer" },
+    "request_timeout_millis": { "type": "integer" }
+  },
+  "additionalProperties": false
+}

@@ -3,47 +3,63 @@
 mod config;
 mod provider;
 
-use std::rc::Rc;
+use std::{cell::RefCell, rc::Rc};
 
-use lenso_capability_http_client::ClientEndpoint;
-use lenso_kernel::{NativeRequestEndpoint, RuntimeFailure};
-use lenso_native_adapter::{NativeModuleFactory, NativeModuleFactoryContext, NativeModuleInstance};
+use lenso::{DeactivateContext, Lifecycle, PrepareContext, provides};
+use lenso_capability_http_client as http_client;
+use lenso_capability_http_client::{Client, ClientProvider, SendRequest};
+use lenso_kernel::{InvocationContext, NativeRequestFuture, RuntimeFailure};
 use reqwest::redirect::Policy;
 
 pub use config::HttpEgressConfig;
 
 use crate::provider::HttpEgressProvider;
 
-/// Package identity for the linked Rust HTTP Egress Module.
-pub const PACKAGE_ID: &str = "lenso.http-egress";
-/// Exact Cargo package version linked into the Host.
-pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
+fn validate_config(config: &HttpEgressConfig) -> Result<(), RuntimeFailure> {
+    config
+        .validate()
+        .map(|_| ())
+        .map_err(|detail| RuntimeFailure::InvalidResolvedPlan {
+            detail: format!("HTTP Egress configuration is invalid: {detail}"),
+        })
+}
 
-/// Factory for immutable outbound HTTP authority configured by the Resolved App Plan.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct HttpEgressFactory;
+#[lenso::module(
+    lifecycle,
+    validate = validate_config,
+    configuration_schema = "config.schema.json"
+)]
+#[derive(Clone, Debug)]
+struct HttpEgressModule {
+    #[config]
+    config: HttpEgressConfig,
+    provider: Rc<RefCell<Option<HttpEgressProvider>>>,
+}
 
-impl NativeModuleFactory for HttpEgressFactory {
-    fn package_id(&self) -> &'static str {
-        PACKAGE_ID
-    }
-
-    fn package_version(&self) -> &'static str {
-        PACKAGE_VERSION
-    }
-
-    fn instantiate(
+#[provides(http_client::Client)]
+impl ClientProvider for HttpEgressModule {
+    fn send(
         &self,
-        context: NativeModuleFactoryContext<'_>,
-    ) -> Result<NativeModuleInstance, RuntimeFailure> {
-        let config =
-            serde_json::from_str::<HttpEgressConfig>(context.configuration()).map_err(|error| {
-                RuntimeFailure::InvalidResolvedPlan {
-                    detail: format!("HTTP Egress configuration is invalid: {error}"),
-                }
-            })?;
+        context: InvocationContext,
+        request: SendRequest,
+    ) -> NativeRequestFuture<Client> {
+        let provider = self.provider.borrow().clone();
+        match provider {
+            Some(provider) => provider.send(context, request),
+            None => Box::pin(async {
+                Err(RuntimeFailure::ModuleFailure {
+                    detail: "HTTP Egress is not prepared".to_owned(),
+                })
+            }),
+        }
+    }
+}
+
+#[allow(unknown_lints, clippy::unused_async_trait_impl)]
+impl Lifecycle for HttpEgressModule {
+    async fn prepare(&self, _context: PrepareContext) -> Result<(), RuntimeFailure> {
         let allowed_origins =
-            config
+            self.config
                 .validate()
                 .map_err(|detail| RuntimeFailure::InvalidResolvedPlan {
                     detail: format!("HTTP Egress configuration is invalid: {detail}"),
@@ -53,18 +69,23 @@ impl NativeModuleFactory for HttpEgressFactory {
             .retry(reqwest::retry::never())
             .referer(false)
             .no_proxy()
-            .connect_timeout(config.connect_timeout())
-            .timeout(config.request_timeout())
+            .connect_timeout(self.config.connect_timeout())
+            .timeout(self.config.request_timeout())
             .user_agent(format!("lenso-http-egress/{PACKAGE_VERSION}"))
             .build()
             .map_err(|error| RuntimeFailure::ModuleFailure {
                 detail: format!("HTTP Egress client could not be prepared: {error}"),
             })?;
-        let endpoint = Rc::new(ClientEndpoint::new(HttpEgressProvider::new(
+        self.provider.borrow_mut().replace(HttpEgressProvider::new(
             client,
-            config,
+            self.config.clone(),
             allowed_origins,
-        ))) as Rc<dyn NativeRequestEndpoint>;
-        Ok(NativeModuleInstance::new(vec![endpoint]))
+        ));
+        Ok(())
+    }
+
+    async fn deactivate(&self, _context: DeactivateContext) -> Result<(), RuntimeFailure> {
+        self.provider.borrow_mut().take();
+        Ok(())
     }
 }
