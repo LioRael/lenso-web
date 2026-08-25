@@ -13,12 +13,12 @@ build = "build.rs"
 futures.workspace = true
 lenso-contract-runtime = "0.1.0"
 lenso-kernel = "0.1.9"
-lenso-module-authoring = { version = "0.1.0", git = "https://github.com/LioRael/lenso-protocols", rev = "7de5bbb1c6999dc8ba69da477efb1dbfc9a403ba" }
+lenso-module-authoring = { version = "0.1.0", git = "https://github.com/LioRael/lenso-protocols", rev = "c1f1dce2cf93420f924d37074035f170e4153fc5" }
 serde.workspace = true
 serde_json.workspace = true
 
 [build-dependencies]
-lenso-contract-codegen = { version = "0.6.1", git = "https://github.com/LioRael/lenso-protocols", rev = "7de5bbb1c6999dc8ba69da477efb1dbfc9a403ba" }
+lenso-contract-codegen = { version = "0.6.1", git = "https://github.com/LioRael/lenso-protocols", rev = "c1f1dce2cf93420f924d37074035f170e4153fc5" }
 serde_json = { workspace = true, features = ["preserve_order"] }
 
 [lints]

@@ -182,6 +182,9 @@ pub trait __LensoIntoClientSendResult {
 impl __LensoIntoClientSendResult for Result<SendResponse, SendError> {
     fn __lenso_into_result(self) -> Result<Result<SendResponse, SendError>, RuntimeFailure> { Ok(self) }
 }
+impl __LensoIntoClientSendResult for Result<Result<SendResponse, SendError>, RuntimeFailure> {
+    fn __lenso_into_result(self) -> Result<Result<SendResponse, SendError>, RuntimeFailure> { self }
+}
 impl __LensoIntoClientSendResult for Result<SendResponse, lenso_module_authoring::ModuleError<SendError, RuntimeFailure>> {
     fn __lenso_into_result(self) -> Result<Result<SendResponse, SendError>, RuntimeFailure> {
         match self {
