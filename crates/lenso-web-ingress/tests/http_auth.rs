@@ -11,7 +11,7 @@ use lenso_auth_sdk::{
     audience, authenticated_response,
 };
 use lenso_capability_auth::{
-    AUTHENTICATE_OPERATION, AuthClient, AuthEndpoint, AuthInvocationError, AuthProvider,
+    AUTHENTICATE_OPERATION, Auth, AuthClient, AuthEndpoint, AuthProvider,
     CAPABILITY_ID as AUTH_CAPABILITY_ID, DESCRIPTOR_VERSION as AUTH_DESCRIPTOR_VERSION,
 };
 use lenso_capability_http_endpoint::{
@@ -23,8 +23,8 @@ use lenso_capability_http_endpoint::{
 use lenso_http_auth::{AuthClientSource, AuthenticatedHttpActor, extract_authenticated_actor};
 use lenso_kernel::{
     ActivateContext, DeactivateContext, InvocationContext, Kernel, ModuleDependencies,
-    ModuleFuture, ModuleLifecycle, NativeRequestEndpoint, NativeRequestHandle, RequestCapability,
-    RuntimeFailure, ShutdownOutcome,
+    ModuleFuture, ModuleLifecycle, NativeRequestEndpoint, NativeRequestFuture, NativeRequestHandle,
+    RequestCapability, RuntimeFailure, ShutdownOutcome,
 };
 use lenso_native_adapter::{
     NativeModuleFactory, NativeModuleFactoryContext, NativeModuleInstance, NativeModuleRegistry,
@@ -222,12 +222,9 @@ impl AuthProvider for TokenAuth {
         &self,
         _context: InvocationContext,
         request: lenso_capability_auth::AuthenticateRequest,
-    ) -> futures::future::LocalBoxFuture<
-        'static,
-        Result<lenso_capability_auth::AuthenticateResponse, AuthInvocationError>,
-    > {
+    ) -> NativeRequestFuture<Auth> {
         let outcome = match request.credential {
-            None => Ok(lenso_auth_sdk::absent_response()),
+            None => Ok(Ok(lenso_auth_sdk::absent_response())),
             Some(credential)
                 if credential.scheme == "bearer"
                     && matches!(
@@ -252,16 +249,14 @@ impl AuthProvider for TokenAuth {
                     .unwrap(),
                     BTreeMap::new(),
                 );
-                Ok(authenticated_response(&assertion))
+                Ok(Ok(authenticated_response(&assertion)))
             }
             Some(credential) if credential.value == "auth-unavailable-token" => {
-                Err(AuthInvocationError::Runtime(RuntimeFailure::Unavailable {
+                Err(RuntimeFailure::Unavailable {
                     capability: AUTH_CAPABILITY_ID,
-                }))
+                })
             }
-            Some(_) => Err(AuthInvocationError::Domain(
-                lenso_capability_auth::AuthenticateError::Invalid,
-            )),
+            Some(_) => Ok(Err(lenso_capability_auth::AuthenticateError::Invalid)),
         };
         Box::pin(futures::future::ready(outcome))
     }
