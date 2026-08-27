@@ -7,7 +7,7 @@ const MAX_HEAD_BYTES: usize = 1024 * 1024;
 const MAX_CONCURRENT_REQUESTS: usize = 4_096;
 const MAX_TIMEOUT_MILLIS: u64 = 300_000;
 
-/// Immutable HTTP policy for one Web Ingress Module Instance.
+/// Immutable HTTP policy for one Web Ingress Plugin Instance.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WebIngressConfig {

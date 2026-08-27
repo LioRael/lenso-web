@@ -1,7 +1,7 @@
-//! Optional `OpenAPI` 3.1 document Module for explicitly bound HTTP Endpoints.
+//! Optional `OpenAPI` 3.1 document Plugin for explicitly bound HTTP Endpoints.
 //!
 //! Merely linking this crate changes no App. App Composition must select an
-//! Instance, bind the Endpoint descriptions to document, and bind this Module's
+//! Instance, bind the Endpoint descriptions to document, and bind this Plugin's
 //! own Endpoint to Web Ingress.
 
 mod assemble;
@@ -32,13 +32,13 @@ fn validate_config(config: &OpenApiConfig) -> Result<(), RuntimeFailure> {
         })
 }
 
-#[lenso::module(
+#[lenso::plugin(
     lifecycle,
     validate = validate_config,
     configuration_schema = "config.schema.json"
 )]
 #[derive(Clone, Debug)]
-struct OpenApiModule {
+struct OpenApiPlugin {
     #[config]
     config: OpenApiConfig,
     endpoints: ManyPort<http_endpoint::EndpointClient>,
@@ -46,7 +46,7 @@ struct OpenApiModule {
 }
 
 #[provides(http_endpoint::Endpoint)]
-impl EndpointProvider for OpenApiModule {
+impl EndpointProvider for OpenApiPlugin {
     fn describe(
         &self,
         _context: InvocationContext,
@@ -113,7 +113,7 @@ impl EndpointProvider for OpenApiModule {
 }
 
 #[allow(unknown_lints, clippy::unused_async_trait_impl)]
-impl Lifecycle for OpenApiModule {
+impl Lifecycle for OpenApiPlugin {
     async fn activate(&self, _context: ActivateContext) -> Result<(), RuntimeFailure> {
         let mut descriptions = Vec::with_capacity(self.endpoints.len());
         for (provider_index, endpoint) in self.endpoints.iter().enumerate() {
@@ -128,7 +128,7 @@ impl Lifecycle for OpenApiModule {
                 })?;
             descriptions.push(description);
         }
-        let assembled = assemble::assemble(&self.config, descriptions).map_err(module_failure)?;
+        let assembled = assemble::assemble(&self.config, descriptions).map_err(plugin_failure)?;
         self.document.borrow_mut().replace(assembled);
         Ok(())
     }
@@ -140,13 +140,13 @@ impl Lifecycle for OpenApiModule {
 }
 
 fn describe_failure(provider_index: usize, error: &DescribeError) -> RuntimeFailure {
-    module_failure(format!(
+    plugin_failure(format!(
         "OpenAPI Endpoint provider {provider_index} rejected its description: {error:?}"
     ))
 }
 
-fn module_failure(detail: impl Into<String>) -> RuntimeFailure {
-    RuntimeFailure::ModuleFailure {
+fn plugin_failure(detail: impl Into<String>) -> RuntimeFailure {
+    RuntimeFailure::PluginFailure {
         detail: detail.into(),
     }
 }

@@ -1,6 +1,6 @@
 # Lenso Web context
 
-`lenso-web` owns general-purpose backend Web Interfaces and linked Rust Modules. It
+`lenso-web` owns general-purpose backend Web Interfaces and linked Rust Plugins. It
 consumes released Lenso Plan, Kernel, runtime, protocol, Auth, and authoring
 packages; none of those repositories depend back on this one.
 
@@ -14,9 +14,9 @@ The durable topology is:
 HTTP client -> Web Ingress -> many lenso.http.endpoint@1 providers
                                   |
                                   v
-                           backend business Modules
+                           backend business Plugins
 
-backend business Module -> one lenso.http.client@1 binding -> HTTP Egress
+backend business Plugin -> one lenso.http.client@1 binding -> HTTP Egress
                                                                |
                                                                v
                                                      allowed upstream origins
@@ -24,11 +24,11 @@ backend business Module -> one lenso.http.client@1 binding -> HTTP Egress
 
 Each provider describes its routes during activation and handles only requests
 routed to its immutable binding. Web Ingress rejects invalid or colliding
-routes before the App Ready Gate opens. No Module registers routes or discovers
+routes before the App Ready Gate opens. No Plugin registers routes or discovers
 providers after startup.
 
-Listener policy and transport limits are immutable Module Instance
-configuration validated by `crates/lenso-web-ingress/config.schema.json` and
+Listener policy and transport limits are immutable Plugin Instance
+configuration validated by `crates/lenso-web-ingress-plugin/config.schema.json` and
 the Ingress factory before resource preparation. App Composition owns the
 configured address and limits; the native factory owns only linked execution
 and an observable bound address for host integration and tests.
@@ -38,7 +38,7 @@ compile-time route declarations. `#[endpoint]` collects HTTP method attributes
 from handlers, while `http_endpoint!` retains the explicit static-table form.
 Both generate the activation description and handler dispatch while leaving
 protocol decoding, authentication orchestration, business Capability calls,
-and HTTP response choices inside the owning Endpoint Module. Dynamic providers
+and HTTP response choices inside the owning Endpoint Plugin. Dynamic providers
 may continue to implement `EndpointProvider` directly; neither macro creates a
 runtime route-registration seam.
 

@@ -1,4 +1,4 @@
-//! General-purpose linked Rust HTTP Ingress Module for Lenso backends.
+//! General-purpose linked Rust HTTP Ingress Plugin for Lenso backends.
 
 mod config;
 mod middleware;
@@ -16,9 +16,9 @@ use std::{
 use lenso::prelude::ManyPort;
 use lenso_capability_http_endpoint::EndpointClient;
 use lenso_kernel::{
-    ActivateContext, ModuleFuture, ModuleLifecycle, PrepareContext, RuntimeFailure,
+    ActivateContext, PluginFuture, PluginLifecycle, PrepareContext, RuntimeFailure,
 };
-use lenso_native_adapter::{NativeModuleFactory, NativeModuleFactoryContext, NativeModuleInstance};
+use lenso_native_adapter::{NativePluginFactory, NativePluginFactoryContext, NativePluginInstance};
 use tokio::net::TcpListener;
 
 pub use config::WebIngressConfig;
@@ -40,7 +40,7 @@ struct WebIngressObserver {
     route_manifest: RefCell<Option<WebIngressRouteManifest>>,
 }
 
-/// Native Module factory and observable endpoint handle for one Ingress.
+/// Native Plugin factory and observable endpoint handle for one Ingress.
 #[derive(Clone, Debug)]
 pub struct WebIngressFactory {
     middleware: Vec<Rc<dyn WebIngressMiddleware>>,
@@ -49,7 +49,7 @@ pub struct WebIngressFactory {
 }
 
 impl WebIngressFactory {
-    /// Creates a factory whose Module Instance policy comes from the Resolved App Plan.
+    /// Creates a factory whose Plugin Instance policy comes from the Resolved App Plan.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -94,7 +94,7 @@ impl Default for WebIngressFactory {
     }
 }
 
-impl NativeModuleFactory for WebIngressFactory {
+impl NativePluginFactory for WebIngressFactory {
     fn package_id(&self) -> &'static str {
         PACKAGE_ID
     }
@@ -105,8 +105,8 @@ impl NativeModuleFactory for WebIngressFactory {
 
     fn instantiate(
         &self,
-        context: NativeModuleFactoryContext<'_>,
-    ) -> Result<NativeModuleInstance, RuntimeFailure> {
+        context: NativePluginFactoryContext<'_>,
+    ) -> Result<NativePluginInstance, RuntimeFailure> {
         let config =
             serde_json::from_str::<WebIngressConfig>(context.configuration()).map_err(|error| {
                 RuntimeFailure::InvalidResolvedPlan {
@@ -127,7 +127,7 @@ impl NativeModuleFactory for WebIngressFactory {
                 }
             })?;
         }
-        Ok(NativeModuleInstance::with_lifecycle(
+        Ok(NativePluginInstance::with_lifecycle(
             Vec::new(),
             WebIngressLifecycle {
                 config,
@@ -160,8 +160,8 @@ impl fmt::Debug for WebIngressLifecycle {
     }
 }
 
-impl ModuleLifecycle for WebIngressLifecycle {
-    fn prepare(&self, _context: PrepareContext) -> ModuleFuture {
+impl PluginLifecycle for WebIngressLifecycle {
+    fn prepare(&self, _context: PrepareContext) -> PluginFuture {
         let config = self.config.clone();
         let observer = self.observer.clone();
         let listener = self.listener.clone();
@@ -173,17 +173,17 @@ impl ModuleLifecycle for WebIngressLifecycle {
             }
             let bound = TcpListener::bind(config.bind_address())
                 .await
-                .map_err(|error| module_failure(format!("Web Ingress bind failed: {error}")))?;
+                .map_err(|error| plugin_failure(format!("Web Ingress bind failed: {error}")))?;
             let address = bound
                 .local_addr()
-                .map_err(|error| module_failure(format!("Web Ingress address failed: {error}")))?;
+                .map_err(|error| plugin_failure(format!("Web Ingress address failed: {error}")))?;
             observer.local_address.set(Some(address));
             listener.borrow_mut().replace(bound);
             Ok(())
         })
     }
 
-    fn activate(&self, context: ActivateContext) -> ModuleFuture {
+    fn activate(&self, context: ActivateContext) -> PluginFuture {
         let listener = self.listener.borrow_mut().take();
         let replica = self.replica.clone();
         if listener.is_none() && replica.is_none() {
@@ -228,15 +228,15 @@ impl ModuleLifecycle for WebIngressLifecycle {
                     server::assert_server_result(result);
                 }))
                 .map_err(|error| {
-                    module_failure(format!("Web Ingress task could not start: {error:?}"))
+                    plugin_failure(format!("Web Ingress task could not start: {error:?}"))
                 })?;
             Ok(())
         })
     }
 }
 
-fn module_failure(detail: impl Into<String>) -> RuntimeFailure {
-    RuntimeFailure::ModuleFailure {
+fn plugin_failure(detail: impl Into<String>) -> RuntimeFailure {
+    RuntimeFailure::PluginFailure {
         detail: detail.into(),
     }
 }

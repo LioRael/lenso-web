@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, fmt::Write as _, net::SocketAddr, rc::Rc, time:
 
 use lenso_app_plan::{
     AppComposition, CapabilityBinding, CapabilityEndpointPlan, CapabilityRequirementPlan,
-    ModuleInstancePlan, ResolvedAppPlan,
+    PluginInstancePlan, ResolvedAppPlan,
 };
 use lenso_capability_http_endpoint::{
     CAPABILITY_ID, DESCRIBE_OPERATION, DESCRIPTOR_VERSION, EndpointEndpoint,
@@ -11,11 +11,11 @@ use lenso_capability_http_endpoint::{
 };
 use lenso_kernel::{Kernel, NativeRequestEndpoint, RuntimeFailure, ShutdownOutcome};
 use lenso_native_adapter::{
-    NativeModuleFactory, NativeModuleFactoryContext, NativeModuleInstance, NativeModuleRegistry,
+    NativePluginFactory, NativePluginFactoryContext, NativePluginInstance, NativePluginRegistry,
 };
-use lenso_openapi::PACKAGE_ID as OPENAPI_PACKAGE_ID;
+use lenso_openapi_plugin::PACKAGE_ID as OPENAPI_PACKAGE_ID;
 use lenso_runner::TokioDriver;
-use lenso_web_ingress::{PACKAGE_ID as INGRESS_PACKAGE_ID, WebIngressFactory};
+use lenso_web_ingress_plugin::{PACKAGE_ID as INGRESS_PACKAGE_ID, WebIngressFactory};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -75,7 +75,7 @@ async fn start(plan: ResolvedAppPlan, ingress: WebIngressFactory) -> lenso_kerne
     Kernel::start_native(
         plan,
         TokioDriver::new(),
-        NativeModuleRegistry::new()
+        NativePluginRegistry::new()
             .with_linked_factories()
             .with_factory(ingress)
             .with_factory(OrdersFactory)
@@ -86,24 +86,24 @@ async fn start(plan: ResolvedAppPlan, ingress: WebIngressFactory) -> lenso_kerne
 }
 
 fn plan(openapi: bool) -> ResolvedAppPlan {
-    let ingress = ModuleInstancePlan::new("web-ingress", INGRESS_PACKAGE_ID).with_requirement(
+    let ingress = PluginInstancePlan::new("web-ingress", INGRESS_PACKAGE_ID).with_requirement(
         CapabilityRequirementPlan::many(CAPABILITY_ID, DESCRIPTOR_VERSION),
     );
-    let orders = ModuleInstancePlan::new("orders-http", ORDERS_PACKAGE_ID).with_capability(
+    let orders = PluginInstancePlan::new("orders-http", ORDERS_PACKAGE_ID).with_capability(
         CapabilityEndpointPlan::new(
             CAPABILITY_ID,
             DESCRIPTOR_VERSION,
             [DESCRIBE_OPERATION, HANDLE_OPERATION],
         ),
     );
-    let status = ModuleInstancePlan::new("status-http", STATUS_PACKAGE_ID).with_capability(
+    let status = PluginInstancePlan::new("status-http", STATUS_PACKAGE_ID).with_capability(
         CapabilityEndpointPlan::new(
             CAPABILITY_ID,
             DESCRIPTOR_VERSION,
             [DESCRIBE_OPERATION, HANDLE_OPERATION],
         ),
     );
-    let mut modules = vec![ingress, orders, status];
+    let mut plugins = vec![ingress, orders, status];
     let mut bindings = vec![
         CapabilityBinding::new(
             "web-ingress",
@@ -119,8 +119,8 @@ fn plan(openapi: bool) -> ResolvedAppPlan {
         ),
     ];
     if openapi {
-        modules.push(
-            ModuleInstancePlan::new("openapi", OPENAPI_PACKAGE_ID)
+        plugins.push(
+            PluginInstancePlan::new("openapi", OPENAPI_PACKAGE_ID)
                 .with_configuration(r#"{"title":"Orders API","version":"1.0.0"}"#)
                 .with_capability(CapabilityEndpointPlan::new(
                     CAPABILITY_ID,
@@ -145,13 +145,13 @@ fn plan(openapi: bool) -> ResolvedAppPlan {
             "openapi",
         ));
     }
-    AppComposition::new(modules, bindings).resolve().unwrap()
+    AppComposition::new(plugins, bindings).resolve().unwrap()
 }
 
 #[derive(Clone, Copy, Debug)]
 struct OrdersFactory;
 
-impl NativeModuleFactory for OrdersFactory {
+impl NativePluginFactory for OrdersFactory {
     fn package_id(&self) -> &'static str {
         ORDERS_PACKAGE_ID
     }
@@ -162,10 +162,10 @@ impl NativeModuleFactory for OrdersFactory {
 
     fn instantiate(
         &self,
-        _context: NativeModuleFactoryContext<'_>,
-    ) -> Result<NativeModuleInstance, RuntimeFailure> {
+        _context: NativePluginFactoryContext<'_>,
+    ) -> Result<NativePluginInstance, RuntimeFailure> {
         let endpoint = Rc::new(EndpointEndpoint::new(OrdersHttp)) as Rc<dyn NativeRequestEndpoint>;
-        Ok(NativeModuleInstance::new(vec![endpoint]))
+        Ok(NativePluginInstance::new(vec![endpoint]))
     }
 }
 
@@ -204,7 +204,7 @@ impl OrdersHttp {
 #[derive(Clone, Copy, Debug)]
 struct StatusFactory;
 
-impl NativeModuleFactory for StatusFactory {
+impl NativePluginFactory for StatusFactory {
     fn package_id(&self) -> &'static str {
         STATUS_PACKAGE_ID
     }
@@ -215,10 +215,10 @@ impl NativeModuleFactory for StatusFactory {
 
     fn instantiate(
         &self,
-        _context: NativeModuleFactoryContext<'_>,
-    ) -> Result<NativeModuleInstance, RuntimeFailure> {
+        _context: NativePluginFactoryContext<'_>,
+    ) -> Result<NativePluginInstance, RuntimeFailure> {
         let endpoint = Rc::new(EndpointEndpoint::new(StatusHttp)) as Rc<dyn NativeRequestEndpoint>;
-        Ok(NativeModuleInstance::new(vec![endpoint]))
+        Ok(NativePluginInstance::new(vec![endpoint]))
     }
 }
 

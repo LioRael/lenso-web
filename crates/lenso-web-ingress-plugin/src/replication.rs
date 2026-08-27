@@ -13,7 +13,7 @@ use tokio::{
     sync::{Semaphore, mpsc, watch},
 };
 
-use crate::{WebIngressConfig, module_failure};
+use crate::{WebIngressConfig, plugin_failure};
 
 /// One canonical route entry used to validate same-port Ingress replicas.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -125,20 +125,20 @@ impl WebIngressListenerCoordinator {
         config: WebIngressConfig,
         replica_count: usize,
     ) -> Result<Self, lenso_kernel::RuntimeFailure> {
-        config.validate().map_err(module_failure)?;
+        config.validate().map_err(plugin_failure)?;
         if replica_count == 0 {
-            return Err(module_failure(
+            return Err(plugin_failure(
                 "Web Ingress listener coordinator requires at least one replica",
             ));
         }
         let listener = TcpListener::bind(config.bind_address())
             .await
-            .map_err(|error| module_failure(format!("Web Ingress bind failed: {error}")))?;
+            .map_err(|error| plugin_failure(format!("Web Ingress bind failed: {error}")))?;
         let address = listener
             .local_addr()
-            .map_err(|error| module_failure(format!("Web Ingress address failed: {error}")))?;
+            .map_err(|error| plugin_failure(format!("Web Ingress address failed: {error}")))?;
         let listener = listener.into_std().map_err(|error| {
-            module_failure(format!("Web Ingress listener transfer failed: {error}"))
+            plugin_failure(format!("Web Ingress listener transfer failed: {error}"))
         })?;
         let (ready, ready_signal) = watch::channel(false);
         let (shutdown, shutdown_signal) = watch::channel(false);
@@ -187,7 +187,7 @@ impl WebIngressListenerCoordinator {
             .slots
             .len();
         if slot >= slot_count {
-            return Err(module_failure(format!(
+            return Err(plugin_failure(format!(
                 "Web Ingress listener coordinator expected {slot_count} replicas"
             )));
         }
@@ -238,7 +238,7 @@ impl WebIngressReplica {
             .expect("Web Ingress coordinator state is not poisoned");
         if let Some(canonical) = &state.canonical_manifest {
             if canonical != &manifest {
-                return Err(module_failure(
+                return Err(plugin_failure(
                     "same-port Web Ingress replicas have different route or middleware manifests",
                 ));
             }
@@ -306,7 +306,7 @@ fn spawn_acceptor(
             });
         })
         .map(|_| ())
-        .map_err(|error| module_failure(format!("Web Ingress acceptor could not start: {error}")))
+        .map_err(|error| plugin_failure(format!("Web Ingress acceptor could not start: {error}")))
 }
 
 async fn distribute_connection(

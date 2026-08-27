@@ -1,4 +1,4 @@
-//! General-purpose, policy-bounded linked Rust HTTP Egress Module.
+//! General-purpose, policy-bounded linked Rust HTTP Egress Plugin.
 
 mod config;
 mod provider;
@@ -24,20 +24,20 @@ fn validate_config(config: &HttpEgressConfig) -> Result<(), RuntimeFailure> {
         })
 }
 
-#[lenso::module(
+#[lenso::plugin(
     lifecycle,
     validate = validate_config,
     configuration_schema = "config.schema.json"
 )]
 #[derive(Clone, Debug)]
-struct HttpEgressModule {
+struct HttpEgressPlugin {
     #[config]
     config: HttpEgressConfig,
     provider: Rc<RefCell<Option<HttpEgressProvider>>>,
 }
 
 #[provides(http_client::Client)]
-impl ClientProvider for HttpEgressModule {
+impl ClientProvider for HttpEgressPlugin {
     fn send(
         &self,
         context: InvocationContext,
@@ -47,7 +47,7 @@ impl ClientProvider for HttpEgressModule {
         match provider {
             Some(provider) => provider.send(context, request),
             None => Box::pin(async {
-                Err(RuntimeFailure::ModuleFailure {
+                Err(RuntimeFailure::PluginFailure {
                     detail: "HTTP Egress is not prepared".to_owned(),
                 })
             }),
@@ -56,7 +56,7 @@ impl ClientProvider for HttpEgressModule {
 }
 
 #[allow(unknown_lints, clippy::unused_async_trait_impl)]
-impl Lifecycle for HttpEgressModule {
+impl Lifecycle for HttpEgressPlugin {
     async fn prepare(&self, _context: PrepareContext) -> Result<(), RuntimeFailure> {
         let allowed_origins =
             self.config
@@ -71,9 +71,9 @@ impl Lifecycle for HttpEgressModule {
             .no_proxy()
             .connect_timeout(self.config.connect_timeout())
             .timeout(self.config.request_timeout())
-            .user_agent(format!("lenso-http-egress/{PACKAGE_VERSION}"))
+            .user_agent(format!("lenso-http-egress-plugin/{PACKAGE_VERSION}"))
             .build()
-            .map_err(|error| RuntimeFailure::ModuleFailure {
+            .map_err(|error| RuntimeFailure::PluginFailure {
                 detail: format!("HTTP Egress client could not be prepared: {error}"),
             })?;
         self.provider.borrow_mut().replace(HttpEgressProvider::new(

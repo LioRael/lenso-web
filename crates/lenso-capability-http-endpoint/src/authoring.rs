@@ -66,7 +66,7 @@ impl EndpointRoute {
     /// Adds an `OpenAPI` 3.1 Operation Object to this route.
     ///
     /// The route ID remains authoritative for `operationId`; the document must not
-    /// declare its own `operationId`. The optional `OpenAPI` Module validates and
+    /// declare its own `operationId`. The optional `OpenAPI` Plugin validates and
     /// assembles this object only when the App explicitly selects and binds it.
     #[must_use]
     pub const fn with_openapi(mut self, operation: &'static str) -> Self {

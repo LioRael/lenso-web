@@ -8,10 +8,10 @@ use lenso_capability_http_endpoint::{
     EndpointHandleInvocationError, HandleRequest, HandleRequestCredential,
     HandleRequestHeadersItem, HandleRequestPathParametersItem, HandleResponse,
 };
-use lenso_kernel::{CancellationToken, ModuleDependencies, RuntimeFailure};
+use lenso_kernel::{CancellationToken, PluginDependencies, RuntimeFailure};
 use matchit::Router;
 
-use crate::{WebIngressRoute, WebIngressRouteManifest, module_failure, server::InboundRequest};
+use crate::{WebIngressRoute, WebIngressRouteManifest, plugin_failure, server::InboundRequest};
 
 #[derive(Debug)]
 struct RouteTarget {
@@ -21,7 +21,7 @@ struct RouteTarget {
 
 #[derive(Debug)]
 pub(super) struct RouteTable {
-    dependencies: ModuleDependencies,
+    dependencies: PluginDependencies,
     providers: ManyPort<EndpointClient>,
     methods: HashMap<Method, Router<RouteTarget>>,
     manifest: WebIngressRouteManifest,
@@ -40,7 +40,7 @@ pub(super) enum DispatchError {
 impl RouteTable {
     pub(super) async fn resolve(
         providers: ManyPort<EndpointClient>,
-        dependencies: &ModuleDependencies,
+        dependencies: &PluginDependencies,
         request_timeout: Duration,
     ) -> Result<Rc<Self>, RuntimeFailure> {
         let mut methods = HashMap::<Method, Router<RouteTarget>>::new();
@@ -50,7 +50,7 @@ impl RouteTable {
                 .describe(DescribeRequest {})
                 .await
                 .map_err(|error| match error {
-                    EndpointDescribeInvocationError::Domain(error) => module_failure(format!(
+                    EndpointDescribeInvocationError::Domain(error) => plugin_failure(format!(
                         "HTTP Endpoint provider {provider_index} rejected its description: {error:?}"
                     )),
                     EndpointDescribeInvocationError::Runtime(error) => error,
@@ -58,7 +58,7 @@ impl RouteTable {
             for route in description.routes {
                 let method = route.method.trim().to_ascii_uppercase();
                 let Ok(method) = Method::from_bytes(method.as_bytes()) else {
-                    return Err(module_failure(format!(
+                    return Err(plugin_failure(format!(
                         "HTTP Endpoint provider {provider_index} declared an invalid route"
                     )));
                 };
@@ -66,7 +66,7 @@ impl RouteTable {
                     || !route.path.starts_with('/')
                     || route.path.contains(['?', '#'])
                 {
-                    return Err(module_failure(format!(
+                    return Err(plugin_failure(format!(
                         "HTTP Endpoint provider {provider_index} declared an invalid route"
                     )));
                 }
@@ -86,7 +86,7 @@ impl RouteTable {
                         },
                     )
                     .map_err(|error| {
-                        module_failure(format!(
+                        plugin_failure(format!(
                             "HTTP route collision for {method} {}: {error}",
                             route.path
                         ))
@@ -94,7 +94,7 @@ impl RouteTable {
             }
         }
         if methods.is_empty() {
-            return Err(module_failure(
+            return Err(plugin_failure(
                 "Web Ingress requires at least one bound HTTP Endpoint route",
             ));
         }

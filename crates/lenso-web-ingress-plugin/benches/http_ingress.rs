@@ -28,8 +28,8 @@ use axum::{
 };
 use futures::future::join_all;
 use lenso_authoring::{
-    Binding, CapabilityEndpoint, CapabilityRequirement, ContractInput, Module, PackageInput,
-    PackageSource, ProjectAuthoring, ProjectFile, ResolutionOptions,
+    Binding, CapabilityEndpoint, CapabilityRequirement, ContractInput, PackageInput, PackageSource,
+    Plugin, ProjectAuthoring, ProjectFile, ResolutionOptions,
 };
 use lenso_capability_http_endpoint::{
     CAPABILITY_ID, DESCRIBE_OPERATION, DESCRIPTOR_VERSION, DescribeRequest, DescribeResponse,
@@ -37,9 +37,9 @@ use lenso_capability_http_endpoint::{
     EndpointProvider, HANDLE_OPERATION, HandleRequest, HandleResponse, HandleResponseHeadersItem,
 };
 use lenso_kernel::{InvocationContext, Kernel, NativeApp, NativeRequestFuture, RuntimeFailure};
-use lenso_native_adapter::{NativeModuleFactory, NativeModuleFactoryContext, NativeModuleInstance};
+use lenso_native_adapter::{NativePluginFactory, NativePluginFactoryContext, NativePluginInstance};
 use lenso_runner::TokioDriver;
-use lenso_web_ingress::{
+use lenso_web_ingress_plugin::{
     PACKAGE_ID, PACKAGE_VERSION, WebIngressConfig, WebIngressFactory, WebIngressListenerCoordinator,
 };
 use tokio::{
@@ -1047,7 +1047,7 @@ async fn start_lenso(
     lane: &str,
 ) -> Result<NativeApp, RuntimeFailure> {
     let endpoint = FixtureEndpointFactory::new(lane);
-    let registry = lenso_native_adapter::NativeModuleRegistry::new()
+    let registry = lenso_native_adapter::NativePluginRegistry::new()
         .with_factory(endpoint)
         .with_factory(ingress.clone());
     let plan = project(config)
@@ -1072,13 +1072,13 @@ fn project(config: WebIngressConfig) -> ProjectFile {
         project.packages_mut().insert(
             package.to_owned(),
             PackageInput::new(package, PackageSource::Cargo, PACKAGE_VERSION)
-                .with_package_name("lenso-web-ingress")
-                .with_manifest("crates/lenso-web-ingress/Cargo.toml")
+                .with_package_name("lenso-web-ingress-plugin")
+                .with_manifest("crates/lenso-web-ingress-plugin/Cargo.toml")
                 .with_lockfile("Cargo.lock"),
         );
     }
     project.composition_mut().add_module(
-        Module::new("benchmark-endpoint", FIXTURE_PACKAGE_ID).with_capability(
+        Plugin::new("benchmark-endpoint", FIXTURE_PACKAGE_ID).with_capability(
             CapabilityEndpoint::request(
                 CAPABILITY_ID,
                 DESCRIPTOR_VERSION,
@@ -1087,8 +1087,8 @@ fn project(config: WebIngressConfig) -> ProjectFile {
         ),
     );
     project.composition_mut().add_module(
-        Module::new("web-ingress", PACKAGE_ID)
-            .with_configuration_schema("crates/lenso-web-ingress/config.schema.json")
+        Plugin::new("web-ingress", PACKAGE_ID)
+            .with_configuration_schema("crates/lenso-web-ingress-plugin/config.schema.json")
             .with_configuration(serde_json::to_value(config).unwrap())
             .with_requirement(CapabilityRequirement::many(
                 CAPABILITY_ID,
@@ -1138,7 +1138,7 @@ impl FixtureEndpointFactory {
     }
 }
 
-impl NativeModuleFactory for FixtureEndpointFactory {
+impl NativePluginFactory for FixtureEndpointFactory {
     fn package_id(&self) -> &'static str {
         FIXTURE_PACKAGE_ID
     }
@@ -1149,9 +1149,9 @@ impl NativeModuleFactory for FixtureEndpointFactory {
 
     fn instantiate(
         &self,
-        _context: NativeModuleFactoryContext<'_>,
-    ) -> Result<NativeModuleInstance, RuntimeFailure> {
-        Ok(NativeModuleInstance::new(vec![Rc::new(
+        _context: NativePluginFactoryContext<'_>,
+    ) -> Result<NativePluginInstance, RuntimeFailure> {
+        Ok(NativePluginInstance::new(vec![Rc::new(
             EndpointEndpoint::new(FixtureEndpoint {
                 lane: self.lane.clone(),
                 routes: self.routes.clone(),

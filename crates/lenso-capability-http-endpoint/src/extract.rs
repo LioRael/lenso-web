@@ -40,7 +40,7 @@ pub type ExtractorFuture<'a, T> = LocalBoxFuture<'a, Result<T, ExtractorRejectio
 ///
 /// Extractors may inspect the Endpoint provider, await explicitly bound
 /// Capability clients, and enrich the invocation context for later extractors
-/// and the handler. They must not perform the target Module's final business
+/// and the handler. They must not perform the target Plugin's final business
 /// authorization decision.
 pub trait FromRequest<P: ?Sized>: Sized {
     /// Extracts this value or rejects dispatch before the handler runs.

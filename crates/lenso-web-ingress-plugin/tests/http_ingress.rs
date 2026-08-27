@@ -13,8 +13,8 @@ use http_body_util::{BodyExt as _, Full};
 use hyper::{Request, Version, client::conn::http2};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use lenso_authoring::{
-    Binding, CapabilityEndpoint, CapabilityRequirement, ContractInput, Module, PackageInput,
-    PackageSource, ProjectAuthoring, ProjectFile, ResolutionOptions,
+    Binding, CapabilityEndpoint, CapabilityRequirement, ContractInput, PackageInput, PackageSource,
+    Plugin, ProjectAuthoring, ProjectFile, ResolutionOptions,
 };
 use lenso_capability_http_endpoint::{
     Bytes as ContractBytes, CAPABILITY_ID, DESCRIBE_OPERATION, DESCRIPTOR_VERSION, DescribeRequest,
@@ -26,10 +26,10 @@ use lenso_kernel::{
     InvocationContext, Kernel, NativeApp, NativeRequestFuture, RuntimeFailure, ShutdownOutcome,
 };
 use lenso_native_adapter::{
-    NativeModuleFactory, NativeModuleFactoryContext, NativeModuleInstance, NativeModuleRegistry,
+    NativePluginFactory, NativePluginFactoryContext, NativePluginInstance, NativePluginRegistry,
 };
 use lenso_runner::TokioDriver;
-use lenso_web_ingress::{
+use lenso_web_ingress_plugin::{
     PACKAGE_ID, PACKAGE_VERSION, WebIngressConfig, WebIngressFactory,
     WebIngressListenerCoordinator, WebIngressMiddleware, WebIngressMiddlewareOutcome,
     WebIngressRequest, WebIngressResponse,
@@ -73,7 +73,7 @@ impl WebIngressMiddleware for GlobalMiddleware {
             http::HeaderValue::from_static("middleware-controlled"),
         );
         if request.uri().path() == "/middleware-error" {
-            return Box::pin(futures::future::ready(Err(RuntimeFailure::ModuleFailure {
+            return Box::pin(futures::future::ready(Err(RuntimeFailure::PluginFailure {
                 detail: "fixture middleware failed".to_owned(),
             })));
         }
@@ -423,7 +423,7 @@ async fn sdk_authored_endpoint_routes_through_the_real_ingress() {
             let app = start_with_registry(
                 project(&[ProviderPlan::new("sdk-orders-http", SDK_PACKAGE_ID)]),
                 &ingress,
-                NativeModuleRegistry::new().with_factory(endpoint.clone()),
+                NativePluginRegistry::new().with_factory(endpoint.clone()),
             )
             .await
             .expect("SDK-authored Endpoint should compose with Web Ingress");
@@ -793,15 +793,15 @@ fn project_with_optional_configuration(
         project.packages_mut().insert(
             package.to_owned(),
             PackageInput::new(package, PackageSource::Cargo, PACKAGE_VERSION)
-                .with_package_name("lenso-web-ingress")
-                .with_manifest("crates/lenso-web-ingress/Cargo.toml")
+                .with_package_name("lenso-web-ingress-plugin")
+                .with_manifest("crates/lenso-web-ingress-plugin/Cargo.toml")
                 .with_lockfile("Cargo.lock"),
         );
     }
     let composition = project.composition_mut();
     for provider in providers {
         composition.add_module(
-            Module::new(provider.instance, provider.package).with_capability(
+            Plugin::new(provider.instance, provider.package).with_capability(
                 CapabilityEndpoint::request(
                     CAPABILITY_ID,
                     DESCRIPTOR_VERSION,
@@ -810,12 +810,12 @@ fn project_with_optional_configuration(
             ),
         );
     }
-    let ingress = Module::new("web-ingress", PACKAGE_ID).with_requirement(
+    let ingress = Plugin::new("web-ingress", PACKAGE_ID).with_requirement(
         CapabilityRequirement::many(CAPABILITY_ID, DESCRIPTOR_VERSION),
     );
     composition.add_module(if let Some(configuration) = configuration {
         ingress
-            .with_configuration_schema("crates/lenso-web-ingress/config.schema.json")
+            .with_configuration_schema("crates/lenso-web-ingress-plugin/config.schema.json")
             .with_configuration(configuration)
     } else {
         ingress
@@ -836,7 +836,7 @@ async fn start<const N: usize>(
     ingress: &WebIngressFactory,
     endpoints: [FixtureEndpointFactory; N],
 ) -> Result<NativeApp, RuntimeFailure> {
-    let mut registry = NativeModuleRegistry::new();
+    let mut registry = NativePluginRegistry::new();
     for endpoint in endpoints {
         registry = registry.with_factory(endpoint);
     }
@@ -846,7 +846,7 @@ async fn start<const N: usize>(
 async fn start_with_registry(
     project: ProjectFile,
     ingress: &WebIngressFactory,
-    registry: NativeModuleRegistry,
+    registry: NativePluginRegistry,
 ) -> Result<NativeApp, RuntimeFailure> {
     let registry = registry.with_factory(ingress.clone());
     let plan = project
@@ -872,7 +872,7 @@ impl SdkEndpointFactory {
     }
 }
 
-impl NativeModuleFactory for SdkEndpointFactory {
+impl NativePluginFactory for SdkEndpointFactory {
     fn package_id(&self) -> &'static str {
         SDK_PACKAGE_ID
     }
@@ -883,9 +883,9 @@ impl NativeModuleFactory for SdkEndpointFactory {
 
     fn instantiate(
         &self,
-        _context: NativeModuleFactoryContext<'_>,
-    ) -> Result<NativeModuleInstance, RuntimeFailure> {
-        Ok(NativeModuleInstance::new(vec![Rc::new(
+        _context: NativePluginFactoryContext<'_>,
+    ) -> Result<NativePluginInstance, RuntimeFailure> {
+        Ok(NativePluginInstance::new(vec![Rc::new(
             EndpointEndpoint::new(self.endpoint.clone()),
         )]))
     }
@@ -987,7 +987,7 @@ impl FixtureEndpointFactory {
     }
 }
 
-impl NativeModuleFactory for FixtureEndpointFactory {
+impl NativePluginFactory for FixtureEndpointFactory {
     fn package_id(&self) -> &'static str {
         self.package_id
     }
@@ -998,9 +998,9 @@ impl NativeModuleFactory for FixtureEndpointFactory {
 
     fn instantiate(
         &self,
-        _context: NativeModuleFactoryContext<'_>,
-    ) -> Result<NativeModuleInstance, RuntimeFailure> {
-        Ok(NativeModuleInstance::new(vec![Rc::new(
+        _context: NativePluginFactoryContext<'_>,
+    ) -> Result<NativePluginInstance, RuntimeFailure> {
+        Ok(NativePluginInstance::new(vec![Rc::new(
             EndpointEndpoint::new(FixtureEndpoint {
                 package_id: self.package_id,
                 routes: self.routes.clone(),

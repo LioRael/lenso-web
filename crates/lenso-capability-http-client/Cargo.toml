@@ -1,7 +1,7 @@
 [package]
 name = "lenso-capability-http-client"
 version = "0.2.2"
-description = "Portable outbound HTTP Client Capability contract for Lenso Modules."
+description = "Portable outbound HTTP Client Capability contract for Lenso Plugins."
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
@@ -11,14 +11,14 @@ build = "build.rs"
 
 [dependencies]
 futures.workspace = true
-lenso-contract-runtime = "0.1.0"
-lenso-kernel = "0.1.9"
-lenso-module-authoring = { version = "0.1.1", git = "https://github.com/LioRael/lenso-protocols", rev = "9a594895137b45a429876b34d8b7cfff008aa335" }
+lenso-contract-runtime.workspace = true
+lenso-kernel.workspace = true
+lenso-plugin-authoring.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
 [build-dependencies]
-lenso-contract-codegen = { version = "0.6.2", git = "https://github.com/LioRael/lenso-protocols", rev = "9a594895137b45a429876b34d8b7cfff008aa335" }
+lenso-contract-codegen.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 
 [lints]

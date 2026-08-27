@@ -1,11 +1,11 @@
 # Agent instructions
 
-This repository owns general-purpose Web backend Interfaces and Modules for
+This repository owns general-purpose Web backend Interfaces and Plugins for
 Lenso: inbound HTTP Endpoint/Web Ingress and outbound HTTP Client/Egress.
 
 Keep HTTP transport outside the portable Kernel. Ingress owns listener
 lifecycle, protocol parsing, route assembly, transport limits, and network
-middleware. Backend Modules provide explicitly bound HTTP Endpoint
+middleware. Backend Plugins provide explicitly bound HTTP Endpoint
 Capabilities and remain the final business authority.
 
 Egress owns outbound transport, exact-origin authority, timeouts, redirects,
@@ -25,7 +25,7 @@ owner.
 
 All bindings are immutable before boot. Do not add runtime route registration,
 global Capability discovery, fallback providers, or ambient HTTP authority.
-Auth owns authentication and target Modules own final authorization; Ingress
+Auth owns authentication and target Plugins own final authorization; Ingress
 only extracts protocol-neutral credential evidence.
 
 The Capability descriptor is authoritative. Native Capability crates own only

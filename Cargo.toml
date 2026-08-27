@@ -4,10 +4,10 @@ members = [
     "crates/lenso-capability-http-client",
     "crates/lenso-capability-http-endpoint",
     "crates/lenso-capability-http-endpoint-macros",
-    "crates/lenso-http-egress",
+    "crates/lenso-http-egress-plugin",
     "crates/lenso-http-auth",
-    "crates/lenso-web-ingress",
-    "crates/lenso-openapi",
+    "crates/lenso-web-ingress-plugin",
+    "crates/lenso-openapi-plugin",
 ]
 
 [workspace.package]
@@ -21,6 +21,15 @@ rust-version = "1.94"
 bytes = "1.12"
 futures = "0.3"
 http = "1"
+lenso = { version = "0.5.0", git = "https://github.com/LioRael/lenso-runtime-rust", rev = "d15b45384b3ad7d8734dac06485b36c5e0d3eb79" }
+lenso-app-plan = { version = "0.3.0", git = "https://github.com/LioRael/lenso", rev = "cd35675a191d815b690c8889756dfe859a0e4d7b" }
+lenso-contract-authoring = { version = "0.1.1", git = "https://github.com/LioRael/lenso-protocols", rev = "239381609da51158d0aae5991bc0d074f742ef42" }
+lenso-contract-codegen = { version = "0.6.3", git = "https://github.com/LioRael/lenso-protocols", rev = "239381609da51158d0aae5991bc0d074f742ef42" }
+lenso-contract-runtime = { version = "0.1.3", git = "https://github.com/LioRael/lenso-protocols", rev = "239381609da51158d0aae5991bc0d074f742ef42" }
+lenso-kernel = { version = "0.2.0", git = "https://github.com/LioRael/lenso", rev = "cd35675a191d815b690c8889756dfe859a0e4d7b" }
+lenso-native-adapter = { version = "0.3.0", git = "https://github.com/LioRael/lenso-runtime-rust", rev = "d15b45384b3ad7d8734dac06485b36c5e0d3eb79" }
+lenso-plugin-authoring = { version = "0.1.1", git = "https://github.com/LioRael/lenso-protocols", rev = "239381609da51158d0aae5991bc0d074f742ef42" }
+lenso-runner = { version = "0.2.0", git = "https://github.com/LioRael/lenso-runtime-rust", rev = "d15b45384b3ad7d8734dac06485b36c5e0d3eb79" }
 proc-macro2 = "1.0"
 quote = "1.0"
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] }
@@ -41,7 +50,3 @@ module_name_repetitions = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 must_use_candidate = "allow"
-
-[patch.crates-io]
-lenso-contract-authoring = { git = "https://github.com/LioRael/lenso-protocols", rev = "9a594895137b45a429876b34d8b7cfff008aa335" }
-lenso-contract-codegen = { git = "https://github.com/LioRael/lenso-protocols", rev = "9a594895137b45a429876b34d8b7cfff008aa335" }
