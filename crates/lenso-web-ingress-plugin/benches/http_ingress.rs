@@ -2,7 +2,6 @@ use std::{
     collections::BTreeMap,
     io::{BufRead as _, BufReader as StdBufReader, Write as _},
     net::SocketAddr,
-    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     rc::Rc,
     sync::{
@@ -27,9 +26,9 @@ use axum::{
     routing::post,
 };
 use futures::future::join_all;
-use lenso_authoring::{
-    Binding, CapabilityEndpoint, CapabilityRequirement, ContractInput, PackageInput, PackageSource,
-    Plugin, ProjectAuthoring, ProjectFile, ResolutionOptions,
+use lenso_app_plan::{
+    AppComposition, CapabilityBinding, CapabilityEndpointPlan, CapabilityRequirementPlan,
+    PluginInstancePlan, ResolvedAppPlan,
 };
 use lenso_capability_http_endpoint::{
     CAPABILITY_ID, DESCRIBE_OPERATION, DESCRIPTOR_VERSION, DescribeRequest, DescribeResponse,
@@ -1050,62 +1049,33 @@ async fn start_lenso(
     let registry = lenso_native_adapter::NativePluginRegistry::new()
         .with_factory(endpoint)
         .with_factory(ingress.clone());
-    let plan = project(config)
-        .resolve(&workspace_root(), &ResolutionOptions::default())
-        .map_err(|error| RuntimeFailure::InvalidResolvedPlan {
-            detail: error.to_string(),
-        })?;
-    Kernel::start_native(plan.plan().clone(), TokioDriver::new(), registry).await
+    Kernel::start_native(project(&config), TokioDriver::new(), registry).await
 }
 
-fn project(config: WebIngressConfig) -> ProjectFile {
-    let mut project = ProjectFile::default();
-    project.contracts_mut().push(
-        ContractInput::descriptor_only(
+fn project(config: &WebIngressConfig) -> ResolvedAppPlan {
+    let endpoint = PluginInstancePlan::new("benchmark-endpoint", FIXTURE_PACKAGE_ID)
+        .with_capability(CapabilityEndpointPlan::new(
             CAPABILITY_ID,
             DESCRIPTOR_VERSION,
-            "crates/lenso-capability-http-endpoint/capability.json",
-        )
-        .with_rust_projection("crates/lenso-capability-http-endpoint/src/generated.rs"),
-    );
-    for package in [FIXTURE_PACKAGE_ID, PACKAGE_ID] {
-        project.packages_mut().insert(
-            package.to_owned(),
-            PackageInput::new(package, PackageSource::Cargo, PACKAGE_VERSION)
-                .with_package_name("lenso-web-ingress-plugin")
-                .with_manifest("crates/lenso-web-ingress-plugin/Cargo.toml")
-                .with_lockfile("Cargo.lock"),
-        );
-    }
-    project.composition_mut().add_module(
-        Plugin::new("benchmark-endpoint", FIXTURE_PACKAGE_ID).with_capability(
-            CapabilityEndpoint::request(
-                CAPABILITY_ID,
-                DESCRIPTOR_VERSION,
-                [DESCRIBE_OPERATION, HANDLE_OPERATION],
-            ),
-        ),
-    );
-    project.composition_mut().add_module(
-        Plugin::new("web-ingress", PACKAGE_ID)
-            .with_configuration_schema("crates/lenso-web-ingress-plugin/config.schema.json")
-            .with_configuration(serde_json::to_value(config).unwrap())
-            .with_requirement(CapabilityRequirement::many(
-                CAPABILITY_ID,
-                DESCRIPTOR_VERSION,
-            )),
-    );
-    project.composition_mut().add_binding(Binding::new(
-        "web-ingress",
-        CAPABILITY_ID,
-        DESCRIPTOR_VERSION,
-        "benchmark-endpoint",
-    ));
-    project
-}
-
-fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+            [DESCRIBE_OPERATION, HANDLE_OPERATION],
+        ));
+    let ingress = PluginInstancePlan::new("web-ingress", PACKAGE_ID)
+        .with_configuration(serde_json::to_string(&config).unwrap())
+        .with_requirement(CapabilityRequirementPlan::many(
+            CAPABILITY_ID,
+            DESCRIPTOR_VERSION,
+        ));
+    AppComposition::new(
+        vec![endpoint, ingress],
+        vec![CapabilityBinding::new(
+            "web-ingress",
+            CAPABILITY_ID,
+            DESCRIPTOR_VERSION,
+            "benchmark-endpoint",
+        )],
+    )
+    .resolve()
+    .unwrap()
 }
 
 #[derive(Clone, Debug)]

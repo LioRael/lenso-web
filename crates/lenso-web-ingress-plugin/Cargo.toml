@@ -32,9 +32,8 @@ tokio = { workspace = true, features = ["macros"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 hyper = { version = "1", features = ["client", "http2"] }
 lenso-app-plan.workspace = true
-lenso-authoring = "0.2.5"
-lenso-auth-sdk = { version = "0.2.0", git = "https://github.com/LioRael/lenso-auth-module", rev = "0f2022f43676ffc2376c7c7f5ccf2c2300055305" }
-lenso-capability-auth = { version = "0.1.1", git = "https://github.com/LioRael/lenso-auth-module", rev = "0f2022f43676ffc2376c7c7f5ccf2c2300055305" }
+lenso-auth-sdk = { version = "0.2.0", git = "https://github.com/LioRael/lenso-auth-module", rev = "cf7a9095489d2baad72bd8475d27adf54cfda5ad" }
+lenso-capability-auth = { version = "0.1.1", git = "https://github.com/LioRael/lenso-auth-module", rev = "cf7a9095489d2baad72bd8475d27adf54cfda5ad" }
 lenso-http-auth = { path = "../lenso-http-auth" }
 lenso-runner.workspace = true
 serde_json.workspace = true

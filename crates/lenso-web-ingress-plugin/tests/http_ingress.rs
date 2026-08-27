@@ -3,7 +3,6 @@ use std::{
     collections::BTreeMap,
     fmt::Write as _,
     net::SocketAddr,
-    path::{Path, PathBuf},
     rc::Rc,
     time::Duration,
 };
@@ -12,9 +11,9 @@ use futures::future::{LocalBoxFuture, pending};
 use http_body_util::{BodyExt as _, Full};
 use hyper::{Request, Version, client::conn::http2};
 use hyper_util::rt::{TokioExecutor, TokioIo};
-use lenso_authoring::{
-    Binding, CapabilityEndpoint, CapabilityRequirement, ContractInput, PackageInput, PackageSource,
-    Plugin, ProjectAuthoring, ProjectFile, ResolutionOptions,
+use lenso_app_plan::{
+    AppComposition, CapabilityBinding, CapabilityEndpointPlan, CapabilityRequirementPlan,
+    PluginInstancePlan, ResolvedAppPlan,
 };
 use lenso_capability_http_endpoint::{
     Bytes as ContractBytes, CAPABILITY_ID, DESCRIBE_OPERATION, DESCRIPTOR_VERSION, DescribeRequest,
@@ -284,7 +283,7 @@ async fn ingress_accepts_http2_prior_knowledge() {
 
 #[tokio::test(flavor = "current_thread")]
 #[allow(clippy::too_many_lines)]
-async fn routes_bound_backend_modules_and_preserves_http_evidence() {
+async fn routes_bound_backend_plugins_and_preserves_http_evidence() {
     LocalSet::new()
         .run_until(async {
             let active_calls = Rc::new(Cell::new(0));
@@ -674,7 +673,7 @@ async fn invalid_plan_configuration_fails_before_readiness() {
             let error = start(
                 project_with_configuration(
                     &[ProviderPlan::new("orders-http", ORDERS_PACKAGE_ID)],
-                    serde_json::json!({"max_concurrent_requests": 0}),
+                    serde_json::json!({"max_concurrent_requests": 0}).to_string(),
                 ),
                 &ingress,
                 [endpoint],
@@ -757,82 +756,60 @@ impl ProviderPlan {
     }
 }
 
-fn project(providers: &[ProviderPlan]) -> ProjectFile {
+fn project(providers: &[ProviderPlan]) -> ResolvedAppPlan {
     project_with_optional_configuration(providers, None)
 }
 
-fn project_with_config(providers: &[ProviderPlan], config: &WebIngressConfig) -> ProjectFile {
-    project_with_configuration(providers, serde_json::to_value(config).unwrap())
+fn project_with_config(providers: &[ProviderPlan], config: &WebIngressConfig) -> ResolvedAppPlan {
+    project_with_configuration(providers, serde_json::to_string(config).unwrap())
 }
 
 fn project_with_configuration(
     providers: &[ProviderPlan],
-    configuration: serde_json::Value,
-) -> ProjectFile {
+    configuration: String,
+) -> ResolvedAppPlan {
     project_with_optional_configuration(providers, Some(configuration))
 }
 
 fn project_with_optional_configuration(
     providers: &[ProviderPlan],
-    configuration: Option<serde_json::Value>,
-) -> ProjectFile {
-    let mut project = ProjectFile::default();
-    project.contracts_mut().push(
-        ContractInput::descriptor_only(
-            CAPABILITY_ID,
-            DESCRIPTOR_VERSION,
-            "crates/lenso-capability-http-endpoint/capability.json",
-        )
-        .with_rust_projection("crates/lenso-capability-http-endpoint/src/generated.rs"),
-    );
-    for package in providers
+    configuration: Option<String>,
+) -> ResolvedAppPlan {
+    let mut plugins = providers
         .iter()
-        .map(|provider| provider.package)
-        .chain([PACKAGE_ID])
-    {
-        project.packages_mut().insert(
-            package.to_owned(),
-            PackageInput::new(package, PackageSource::Cargo, PACKAGE_VERSION)
-                .with_package_name("lenso-web-ingress-plugin")
-                .with_manifest("crates/lenso-web-ingress-plugin/Cargo.toml")
-                .with_lockfile("Cargo.lock"),
-        );
-    }
-    let composition = project.composition_mut();
-    for provider in providers {
-        composition.add_module(
-            Plugin::new(provider.instance, provider.package).with_capability(
-                CapabilityEndpoint::request(
+        .map(|provider| {
+            PluginInstancePlan::new(provider.instance, provider.package).with_capability(
+                CapabilityEndpointPlan::new(
                     CAPABILITY_ID,
                     DESCRIPTOR_VERSION,
                     [DESCRIBE_OPERATION, HANDLE_OPERATION],
                 ),
-            ),
-        );
-    }
-    let ingress = Plugin::new("web-ingress", PACKAGE_ID).with_requirement(
-        CapabilityRequirement::many(CAPABILITY_ID, DESCRIPTOR_VERSION),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut ingress = PluginInstancePlan::new("web-ingress", PACKAGE_ID).with_requirement(
+        CapabilityRequirementPlan::many(CAPABILITY_ID, DESCRIPTOR_VERSION),
     );
-    composition.add_module(if let Some(configuration) = configuration {
-        ingress
-            .with_configuration_schema("crates/lenso-web-ingress-plugin/config.schema.json")
-            .with_configuration(configuration)
-    } else {
-        ingress
-    });
-    for provider in providers {
-        composition.add_binding(Binding::new(
-            "web-ingress",
-            CAPABILITY_ID,
-            DESCRIPTOR_VERSION,
-            provider.instance,
-        ));
+    if let Some(configuration) = configuration {
+        ingress = ingress.with_configuration(configuration);
     }
-    project
+    plugins.push(ingress);
+    let bindings = providers
+        .iter()
+        .map(|provider| {
+            CapabilityBinding::new(
+                "web-ingress",
+                CAPABILITY_ID,
+                DESCRIPTOR_VERSION,
+                provider.instance,
+            )
+        })
+        .collect();
+    AppComposition::new(plugins, bindings).resolve().unwrap()
 }
 
 async fn start<const N: usize>(
-    project: ProjectFile,
+    plan: ResolvedAppPlan,
     ingress: &WebIngressFactory,
     endpoints: [FixtureEndpointFactory; N],
 ) -> Result<NativeApp, RuntimeFailure> {
@@ -840,25 +817,16 @@ async fn start<const N: usize>(
     for endpoint in endpoints {
         registry = registry.with_factory(endpoint);
     }
-    start_with_registry(project, ingress, registry).await
+    start_with_registry(plan, ingress, registry).await
 }
 
 async fn start_with_registry(
-    project: ProjectFile,
+    plan: ResolvedAppPlan,
     ingress: &WebIngressFactory,
     registry: NativePluginRegistry,
 ) -> Result<NativeApp, RuntimeFailure> {
     let registry = registry.with_factory(ingress.clone());
-    let plan = project
-        .resolve(&workspace_root(), &ResolutionOptions::default())
-        .map_err(|error| RuntimeFailure::InvalidResolvedPlan {
-            detail: error.to_string(),
-        })?;
-    Kernel::start_native(plan.plan().clone(), TokioDriver::new(), registry).await
-}
-
-fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    Kernel::start_native(plan, TokioDriver::new(), registry).await
 }
 
 #[derive(Clone, Debug, Default)]
