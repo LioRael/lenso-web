@@ -15,7 +15,7 @@ root-slot = "http-endpoints"
 [dependencies]
 futures.workspace = true
 lenso.workspace = true
-lenso-capability-http-endpoint = { version = "0.2.5", path = "../lenso-capability-http-endpoint" }
+lenso-capability-http-endpoint = { version = "0.2.6", path = "../lenso-capability-http-endpoint" }
 lenso-kernel.workspace = true
 lenso-native-adapter.workspace = true
 serde.workspace = true

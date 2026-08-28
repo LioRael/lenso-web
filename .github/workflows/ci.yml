@@ -41,5 +41,10 @@ jobs:
             -p lenso-http-auth \
             -p lenso-openapi-plugin \
             -p lenso-web-ingress-plugin
-      - name: Package HTTP Egress
-        run: cargo package --locked --no-verify -p lenso-http-egress-plugin
+      - name: Package HTTP Egress release set
+        run: |
+          # Keep the provider and its same-release Capability together so
+          # Cargo resolves the unpublished local Capability version.
+          cargo package --locked --no-verify \
+            -p lenso-capability-http-client \
+            -p lenso-http-egress-plugin
