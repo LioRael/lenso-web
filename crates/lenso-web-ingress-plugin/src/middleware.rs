@@ -1,4 +1,4 @@
-//! Global middleware for one Web Ingress Module Instance.
+//! Global middleware for one Web Ingress Plugin Instance.
 
 use std::{fmt, future::Future, rc::Rc};
 
@@ -22,7 +22,7 @@ pub enum WebIngressMiddlewareOutcome {
     Respond(WebIngressResponse),
 }
 
-/// Global network policy owned by one concrete Web Ingress Module factory.
+/// Global network policy owned by one concrete Web Ingress Plugin factory.
 ///
 /// Middleware runs in declaration order before route dispatch and in reverse
 /// order after a response. Its identity must include immutable configuration;

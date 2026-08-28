@@ -1,7 +1,7 @@
 [package]
-name = "lenso-web-ingress"
+name = "lenso-web-ingress-plugin"
 version = "0.3.5"
-description = "General-purpose linked Rust HTTP Ingress Module for Lenso backends."
+description = "General-purpose linked Rust HTTP Ingress Plugin for Lenso backends."
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
@@ -9,7 +9,8 @@ repository.workspace = true
 rust-version.workspace = true
 
 [package.metadata.lenso]
-package-id = "lenso.web-ingress"
+plugin-id = "lenso.web-ingress"
+root-slot = "http-ingress"
 
 [dependencies]
 bytes = "1"
@@ -18,10 +19,10 @@ http = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "http2", "server"] }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
-lenso = { version = "0.4.0", git = "https://github.com/LioRael/lenso-runtime-rust.git", rev = "48cf37b6475a0dbbe4ad8492888ed7c6c17abae4" }
+lenso.workspace = true
 lenso-capability-http-endpoint = { version = "0.2.5", path = "../lenso-capability-http-endpoint" }
-lenso-kernel = "0.1.9"
-lenso-native-adapter = { version = "0.1.2", git = "https://github.com/LioRael/lenso-runtime-rust.git", rev = "48cf37b6475a0dbbe4ad8492888ed7c6c17abae4" }
+lenso-kernel.workspace = true
+lenso-native-adapter.workspace = true
 matchit = "0.8"
 serde.workspace = true
 serde_json.workspace = true
@@ -30,12 +31,11 @@ tokio = { workspace = true, features = ["macros"] }
 [dev-dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 hyper = { version = "1", features = ["client", "http2"] }
-lenso-app-plan = "0.1.4"
-lenso-authoring = "0.2.5"
-lenso-auth-sdk = { version = "0.2.0", git = "https://github.com/LioRael/lenso-auth-module", rev = "0f2022f43676ffc2376c7c7f5ccf2c2300055305" }
-lenso-capability-auth = { version = "0.1.1", git = "https://github.com/LioRael/lenso-auth-module", rev = "0f2022f43676ffc2376c7c7f5ccf2c2300055305" }
+lenso-app-plan.workspace = true
+lenso-auth-sdk = { version = "0.2.0", git = "https://github.com/LioRael/lenso-auth-module", rev = "cf7a9095489d2baad72bd8475d27adf54cfda5ad" }
+lenso-capability-auth = { version = "0.1.1", git = "https://github.com/LioRael/lenso-auth-module", rev = "cf7a9095489d2baad72bd8475d27adf54cfda5ad" }
 lenso-http-auth = { path = "../lenso-http-auth" }
-lenso-runner = { version = "0.1.6", git = "https://github.com/LioRael/lenso-runtime-rust.git", rev = "48cf37b6475a0dbbe4ad8492888ed7c6c17abae4" }
+lenso-runner.workspace = true
 serde_json.workspace = true
 stats_alloc = "0.1.10"
 time = "0.3"

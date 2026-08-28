@@ -10,7 +10,7 @@ const MAX_TIMEOUT_MILLIS: u64 = 300_000;
 const MAX_ALLOWED_ORIGINS: usize = 256;
 const MAX_URL_BYTES: usize = 4_096;
 
-/// Immutable outbound HTTP authority and resource limits for one Module Instance.
+/// Immutable outbound HTTP authority and resource limits for one Plugin Instance.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct HttpEgressConfig {

@@ -3,16 +3,16 @@ use std::time::Duration;
 use axum::{Router, body::Bytes, http::StatusCode, routing::get, routing::post};
 use lenso_app_plan::{
     AppComposition, CapabilityBinding, CapabilityEndpointPlan, CapabilityRequirementPlan,
-    ModuleInstancePlan, ResolvedAppPlan,
+    PluginInstancePlan, ResolvedAppPlan,
 };
 use lenso_capability_http_client::{
     CAPABILITY_ID, Client, DESCRIPTOR_VERSION, SEND_OPERATION, SendError, SendRequest,
     SendRequestHeadersItem,
 };
-use lenso_http_egress::{HttpEgressConfig, PACKAGE_ID};
+use lenso_http_egress_plugin::{HttpEgressConfig, PACKAGE_ID};
 use lenso_kernel::{Kernel, RuntimeFailure, ShutdownOutcome};
 use lenso_native_adapter::{
-    NativeModuleFactory, NativeModuleFactoryContext, NativeModuleInstance, NativeModuleRegistry,
+    NativePluginFactory, NativePluginFactoryContext, NativePluginInstance, NativePluginRegistry,
 };
 use lenso_runner::TokioDriver;
 use tokio::{net::TcpListener, task::JoinHandle};
@@ -22,16 +22,16 @@ const CALLER_PACKAGE_ID: &str = "fixture.http-client";
 #[derive(Debug)]
 struct CallerFactory;
 
-impl NativeModuleFactory for CallerFactory {
+impl NativePluginFactory for CallerFactory {
     fn package_id(&self) -> &'static str {
         CALLER_PACKAGE_ID
     }
 
     fn instantiate(
         &self,
-        _context: NativeModuleFactoryContext<'_>,
-    ) -> Result<NativeModuleInstance, RuntimeFailure> {
-        Ok(NativeModuleInstance::default())
+        _context: NativePluginFactoryContext<'_>,
+    ) -> Result<NativePluginInstance, RuntimeFailure> {
+        Ok(NativePluginInstance::default())
     }
 }
 
@@ -186,7 +186,7 @@ async fn start(config: HttpEgressConfig) -> lenso_kernel::NativeApp {
     Kernel::start_native(
         plan(&config),
         TokioDriver::new(),
-        NativeModuleRegistry::new()
+        NativePluginRegistry::new()
             .with_linked_factories()
             .with_factory(CallerFactory),
     )
@@ -195,10 +195,10 @@ async fn start(config: HttpEgressConfig) -> lenso_kernel::NativeApp {
 }
 
 fn plan(config: &HttpEgressConfig) -> ResolvedAppPlan {
-    let caller = ModuleInstancePlan::new("caller", CALLER_PACKAGE_ID).with_requirement(
+    let caller = PluginInstancePlan::new("caller", CALLER_PACKAGE_ID).with_requirement(
         CapabilityRequirementPlan::one(CAPABILITY_ID, DESCRIPTOR_VERSION),
     );
-    let egress = ModuleInstancePlan::new("http-egress", PACKAGE_ID)
+    let egress = PluginInstancePlan::new("http-egress", PACKAGE_ID)
         .with_configuration(serde_json::to_string(config).unwrap())
         .with_capability(CapabilityEndpointPlan::new(
             CAPABILITY_ID,

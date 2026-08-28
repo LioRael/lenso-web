@@ -1,15 +1,15 @@
 # Lenso Web
 
-General-purpose backend Web Interfaces and Modules for Lenso.
+General-purpose backend Web Interfaces and Plugins for Lenso.
 
 This repository owns:
 
-- `lenso.http.endpoint@1`, provided by backend Modules that own HTTP behavior;
-- `lenso-web-ingress`, which assembles immutable routes and owns HTTP transport;
-- `lenso.http.client@1`, required by backend Modules that call upstream HTTP APIs;
-- `lenso-http-egress`, which provides policy-bounded outbound HTTP transport;
+- `lenso.http.endpoint@1`, provided by backend Plugins that own HTTP behavior;
+- `lenso-web-ingress-plugin`, which assembles immutable routes and owns HTTP transport;
+- `lenso.http.client@1`, required by backend Plugins that call upstream HTTP APIs;
+- `lenso-http-egress-plugin`, which provides policy-bounded outbound HTTP transport;
 - credential-evidence extraction before a target-owned Auth decision; and
-- protocol response mapping after the target Module completes.
+- protocol response mapping after the target Plugin completes.
 
 It does not own portable Kernel semantics, authentication policy, business
 authorization, Console/UI behavior, Web Shell, Browser Adapter, or a global
@@ -20,21 +20,21 @@ route registry.
 - `lenso-capability-http-endpoint`
 - `lenso-capability-http-client`
 - `lenso-http-auth`
-- `lenso-http-egress`
-- `lenso-openapi`
-- `lenso-web-ingress`
+- `lenso-http-egress-plugin`
+- `lenso-openapi-plugin`
+- `lenso-web-ingress-plugin`
 
-`lenso-http-egress` and `lenso-openapi` use the ordinary source-first native
-authoring path: struct Modules declare configuration, typed Capability Ports,
+`lenso-http-egress-plugin` and `lenso-openapi-plugin` use the ordinary source-first native
+authoring path: struct Plugins declare configuration, typed Capability Ports,
 provided Capabilities, and lifecycle hooks; linked factory registration and
 Provider endpoints are generated. App Composition still decides whether an
 Instance exists and exactly which bindings it receives.
 
-`lenso-web-ingress` remains the deliberate compatibility exception. It is an
+`lenso-web-ingress-plugin` remains the deliberate compatibility exception. It is an
 endpoint-free `many lenso.http.endpoint@1` consumer and its public Factory also
 accepts Host-owned middleware, listener observation, and lane-replica handles.
 The current struct authoring macro cannot inject those Host-only values into a
-consumer-only Module. Ingress routing nevertheless uses the generated typed
+consumer-only Plugin. Ingress routing nevertheless uses the generated typed
 `ManyPort<EndpointClient>`; raw request handles are confined to generated
 Capability projection code and test fixtures.
 
@@ -42,7 +42,7 @@ The Capability crates keep their generated Rust bindings. Bun consumers import
 the matching TypeScript projections from `@lenso/bun`, which locks the source
 revision and verifies each projection independently.
 
-`WebIngressConfig` is immutable Module Instance configuration from the Resolved
+`WebIngressConfig` is immutable Plugin Instance configuration from the Resolved
 App Plan and defaults to an ephemeral loopback listener. App Composition may
 explicitly bind a fixed private or public address; deployment policy stays with
 the host. Ingress serves HTTP/1.1 and cleartext HTTP/2 prior knowledge, accepts
@@ -53,7 +53,7 @@ client disconnect or App shutdown. Request bodies are collected frame-by-frame
 under the configured limit and avoid a copy when Hyper supplies one data frame.
 
 Customized configuration uses
-`crates/lenso-web-ingress/config.schema.json`. All fields are optional:
+`crates/lenso-web-ingress-plugin/config.schema.json`. All fields are optional:
 
 ```json
 {
@@ -190,7 +190,7 @@ directly; an endpoint for a distinct credential actor kind can define
 `AdminActor` in the same way. These `AuthenticatedHttpActor` types are edge
 authentication projections, not
 permission shortcuts: roles, tenant access, resource ownership, and every final
-authorization decision remain in the target business Module, which verifies
+authorization decision remain in the target business Plugin, which verifies
 the attached assertion. Release clients during deactivation rather than
 resolving bindings per request.
 
@@ -205,7 +205,7 @@ path.
 
 ## Optional OpenAPI 3.1 documents
 
-OpenAPI is an opt-in Module, not an Ingress mode. Linking `lenso-openapi` does
+OpenAPI is an opt-in Plugin, not an Ingress mode. Linking `lenso-openapi-plugin` does
 not add a route or change an App. App Composition enables it by selecting one
 `lenso.openapi` Instance, binding the Endpoint providers to document to that
 Instance, and binding the Instance's own HTTP Endpoint to Web Ingress. Removing
@@ -254,7 +254,7 @@ metadata remains valid and receives an `Undocumented response.` fallback only
 when an OpenAPI document is assembled.
 
 The selected `lenso.openapi` Instance uses immutable configuration validated by
-`crates/lenso-openapi/config.schema.json`:
+`crates/lenso-openapi-plugin/config.schema.json`:
 
 ```json
 {
@@ -271,7 +271,7 @@ The selected `lenso.openapi` Instance uses immutable configuration validated by
 }
 ```
 
-The Module never infers a public server address from its listener and never
+The Plugin never infers a public server address from its listener and never
 discovers Endpoint providers globally. Only providers explicitly bound to its
 `many lenso.http.endpoint@1` requirement appear in the document. Swagger UI,
 Redoc, pages, assets, and navigation remain with the application or Console UI
@@ -293,7 +293,7 @@ order, including for short-circuited responses:
 ```rust,ignore
 use futures::future::LocalBoxFuture;
 use lenso_kernel::RuntimeFailure;
-use lenso_web_ingress::{
+use lenso_web_ingress_plugin::{
     WebIngressFactory, WebIngressMiddleware, WebIngressMiddlewareOutcome,
     WebIngressRequest, WebIngressResponse,
 };
@@ -336,7 +336,7 @@ headers to an Endpoint, bypass immutable transfer limits, or access Hyper's
 connection body. Middleware failures map to `503`.
 
 Authentication remains Endpoint orchestration: use `UserActor` or `AdminActor`
-extractors backed by the Auth Module so the target Module can still make the
+extractors backed by the Auth Plugin so the target Plugin can still make the
 final authorization decision. Do not turn global Ingress middleware into a
 business identity or permission registry.
 
@@ -376,7 +376,7 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 Release-plz opens release PRs from `main` and publishes the public crates through
 the configured crates.io Trusted Publishers and GitHub OIDC. Dependency-aware
 publication releases the Capability crates before the dependent
-`lenso-web-ingress` and `lenso-http-egress` Modules, and workspace CI fully
+`lenso-web-ingress-plugin` and `lenso-http-egress-plugin` Plugins, and workspace CI fully
 verifies every package archive.
 
 The independent-process benchmark compares transport-only Axum, the bridge,
@@ -386,14 +386,14 @@ server. Filters keep short local runs reproducible:
 ```sh
 LENSO_HTTP_BENCH_BODY_BYTES=0 \
 LENSO_HTTP_BENCH_CONNECTIONS=8 \
-cargo bench -p lenso-web-ingress --bench http_ingress_process
+cargo bench -p lenso-web-ingress-plugin --bench http_ingress_process
 ```
 
 The Web execution profile adds the decision evidence needed before introducing
 a different Web scheduler:
 
 ```sh
-cargo bench -p lenso-web-ingress --bench web_execution_profile
+cargo bench -p lenso-web-ingress-plugin --bench web_execution_profile
 ```
 
 It runs the same echo and delayed handlers through bare Axum, policy-equivalent

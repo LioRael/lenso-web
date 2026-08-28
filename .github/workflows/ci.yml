@@ -39,7 +39,7 @@ jobs:
             -p lenso-capability-http-endpoint-macros \
             -p lenso-capability-http-endpoint \
             -p lenso-http-auth \
-            -p lenso-openapi \
-            -p lenso-web-ingress
+            -p lenso-openapi-plugin \
+            -p lenso-web-ingress-plugin
       - name: Package HTTP Egress
-        run: cargo package --locked --no-verify -p lenso-http-egress
+        run: cargo package --locked --no-verify -p lenso-http-egress-plugin

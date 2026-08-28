@@ -1,7 +1,7 @@
 //! Auth-aware actor extraction for authored HTTP Endpoint providers.
 //!
 //! This crate owns ingress authentication glue only. Extracted actors identify
-//! evidence accepted by the bound Auth Module; target Modules must still verify
+//! evidence accepted by the bound Auth Plugin; target Plugins must still verify
 //! the attached assertion and make the final business authorization decision.
 
 use std::rc::Rc;

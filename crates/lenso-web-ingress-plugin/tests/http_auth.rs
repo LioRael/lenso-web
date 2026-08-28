@@ -4,7 +4,7 @@ use std::{
 
 use lenso_app_plan::{
     AppComposition, CapabilityBinding, CapabilityEndpointPlan, CapabilityRequirementPlan,
-    ModuleInstancePlan,
+    PluginInstancePlan,
 };
 use lenso_auth_sdk::{
     ActorAssertion, ActorAssertionIssuer, ActorProjectionError, FixedClock, TypedActor, Validity,
@@ -22,15 +22,15 @@ use lenso_capability_http_endpoint::{
 };
 use lenso_http_auth::{AuthClientSource, AuthenticatedHttpActor, extract_authenticated_actor};
 use lenso_kernel::{
-    ActivateContext, DeactivateContext, InvocationContext, Kernel, ModuleDependencies,
-    ModuleFuture, ModuleLifecycle, NativeRequestEndpoint, NativeRequestFuture, NativeRequestHandle,
+    ActivateContext, DeactivateContext, InvocationContext, Kernel, NativeRequestEndpoint,
+    NativeRequestFuture, NativeRequestHandle, PluginDependencies, PluginFuture, PluginLifecycle,
     RequestCapability, RuntimeFailure, ShutdownOutcome,
 };
 use lenso_native_adapter::{
-    NativeModuleFactory, NativeModuleFactoryContext, NativeModuleInstance, NativeModuleRegistry,
+    NativePluginFactory, NativePluginFactoryContext, NativePluginInstance, NativePluginRegistry,
 };
 use lenso_runner::TokioDriver;
-use lenso_web_ingress::{PACKAGE_ID as INGRESS_PACKAGE_ID, WebIngressFactory};
+use lenso_web_ingress_plugin::{PACKAGE_ID as INGRESS_PACKAGE_ID, WebIngressFactory};
 use serde::{Deserialize, Serialize};
 use time::{Duration as TimeDuration, OffsetDateTime};
 use tokio::{
@@ -59,7 +59,7 @@ async fn web_authenticates_evidence_and_target_authorizes_the_assertion() {
             let app = Kernel::start_native(
                 plan(),
                 TokioDriver::new(),
-                NativeModuleRegistry::new()
+                NativePluginRegistry::new()
                     .with_factory(ingress.clone())
                     .with_factory(TokenAuthFactory {
                         issuer: issuer.clone(),
@@ -127,10 +127,10 @@ async fn web_authenticates_evidence_and_target_authorizes_the_assertion() {
 }
 
 fn plan() -> lenso_app_plan::ResolvedAppPlan {
-    let ingress = ModuleInstancePlan::new("web-ingress", INGRESS_PACKAGE_ID).with_requirement(
+    let ingress = PluginInstancePlan::new("web-ingress", INGRESS_PACKAGE_ID).with_requirement(
         CapabilityRequirementPlan::many(HTTP_CAPABILITY_ID, HTTP_DESCRIPTOR_VERSION),
     );
-    let endpoint = ModuleInstancePlan::new("orders-http", ENDPOINT_PACKAGE_ID)
+    let endpoint = PluginInstancePlan::new("orders-http", ENDPOINT_PACKAGE_ID)
         .with_capability(CapabilityEndpointPlan::new(
             HTTP_CAPABILITY_ID,
             HTTP_DESCRIPTOR_VERSION,
@@ -144,14 +144,14 @@ fn plan() -> lenso_app_plan::ResolvedAppPlan {
             ORDERS_CAPABILITY_ID,
             ORDERS_DESCRIPTOR_VERSION,
         ));
-    let auth = ModuleInstancePlan::new("auth", AUTH_PACKAGE_ID).with_capability(
+    let auth = PluginInstancePlan::new("auth", AUTH_PACKAGE_ID).with_capability(
         CapabilityEndpointPlan::new(
             AUTH_CAPABILITY_ID,
             AUTH_DESCRIPTOR_VERSION,
             [AUTHENTICATE_OPERATION],
         ),
     );
-    let orders = ModuleInstancePlan::new("orders", ORDERS_PACKAGE_ID).with_capability(
+    let orders = PluginInstancePlan::new("orders", ORDERS_PACKAGE_ID).with_capability(
         CapabilityEndpointPlan::new(
             ORDERS_CAPABILITY_ID,
             ORDERS_DESCRIPTOR_VERSION,
@@ -191,7 +191,7 @@ struct TokenAuthFactory {
     now: OffsetDateTime,
 }
 
-impl NativeModuleFactory for TokenAuthFactory {
+impl NativePluginFactory for TokenAuthFactory {
     fn package_id(&self) -> &'static str {
         AUTH_PACKAGE_ID
     }
@@ -200,9 +200,9 @@ impl NativeModuleFactory for TokenAuthFactory {
     }
     fn instantiate(
         &self,
-        _context: NativeModuleFactoryContext<'_>,
-    ) -> Result<NativeModuleInstance, RuntimeFailure> {
-        Ok(NativeModuleInstance::new(vec![Rc::new(AuthEndpoint::new(
+        _context: NativePluginFactoryContext<'_>,
+    ) -> Result<NativePluginInstance, RuntimeFailure> {
+        Ok(NativePluginInstance::new(vec![Rc::new(AuthEndpoint::new(
             TokenAuth {
                 issuer: self.issuer.clone(),
                 now: self.now,
@@ -267,7 +267,7 @@ struct AuthenticatedHttpFactory {
     dependencies: Rc<RefCell<Option<EndpointDependencies>>>,
 }
 
-impl NativeModuleFactory for AuthenticatedHttpFactory {
+impl NativePluginFactory for AuthenticatedHttpFactory {
     fn package_id(&self) -> &'static str {
         ENDPOINT_PACKAGE_ID
     }
@@ -276,9 +276,9 @@ impl NativeModuleFactory for AuthenticatedHttpFactory {
     }
     fn instantiate(
         &self,
-        _context: NativeModuleFactoryContext<'_>,
-    ) -> Result<NativeModuleInstance, RuntimeFailure> {
-        Ok(NativeModuleInstance::with_lifecycle(
+        _context: NativePluginFactoryContext<'_>,
+    ) -> Result<NativePluginInstance, RuntimeFailure> {
+        Ok(NativePluginInstance::with_lifecycle(
             vec![Rc::new(EndpointEndpoint::new(AuthenticatedOrdersHttp {
                 dependencies: self.dependencies.clone(),
             }))],
@@ -300,8 +300,8 @@ struct EndpointLifecycle {
     dependencies: Rc<RefCell<Option<EndpointDependencies>>>,
 }
 
-impl ModuleLifecycle for EndpointLifecycle {
-    fn activate(&self, context: ActivateContext) -> ModuleFuture {
+impl PluginLifecycle for EndpointLifecycle {
+    fn activate(&self, context: ActivateContext) -> PluginFuture {
         let result = (|| {
             self.dependencies
                 .borrow_mut()
@@ -314,7 +314,7 @@ impl ModuleLifecycle for EndpointLifecycle {
         Box::pin(futures::future::ready(result))
     }
 
-    fn deactivate(&self, _context: DeactivateContext) -> ModuleFuture {
+    fn deactivate(&self, _context: DeactivateContext) -> PluginFuture {
         self.dependencies.borrow_mut().take();
         Box::pin(futures::future::ready(Ok(())))
     }
@@ -460,7 +460,7 @@ struct OrdersClient {
 }
 
 impl OrdersClient {
-    fn from_dependencies(dependencies: &ModuleDependencies) -> Result<Self, RuntimeFailure> {
+    fn from_dependencies(dependencies: &PluginDependencies) -> Result<Self, RuntimeFailure> {
         Ok(Self {
             handle: dependencies.one::<ReadOrder>()?,
         })
@@ -498,7 +498,7 @@ struct OrdersFactory {
     observed_actor: Rc<RefCell<Option<String>>>,
 }
 
-impl NativeModuleFactory for OrdersFactory {
+impl NativePluginFactory for OrdersFactory {
     fn package_id(&self) -> &'static str {
         ORDERS_PACKAGE_ID
     }
@@ -507,9 +507,9 @@ impl NativeModuleFactory for OrdersFactory {
     }
     fn instantiate(
         &self,
-        _context: NativeModuleFactoryContext<'_>,
-    ) -> Result<NativeModuleInstance, RuntimeFailure> {
-        Ok(NativeModuleInstance::new(vec![Rc::new(OrdersEndpoint {
+        _context: NativePluginFactoryContext<'_>,
+    ) -> Result<NativePluginInstance, RuntimeFailure> {
+        Ok(NativePluginInstance::new(vec![Rc::new(OrdersEndpoint {
             verifier: self.verifier.clone(),
             now: self.now,
             observed_actor: self.observed_actor.clone(),
