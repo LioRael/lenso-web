@@ -172,7 +172,7 @@ impl NativePluginFactory for OrdersFactory {
 #[derive(Clone, Copy, Debug)]
 struct OrdersHttp;
 
-#[endpoint]
+#[endpoint(standalone)]
 impl OrdersHttp {
     #[get("orders.read", "/orders/{order_id}")]
     #[openapi({
@@ -225,7 +225,7 @@ impl NativePluginFactory for StatusFactory {
 #[derive(Clone, Copy, Debug)]
 struct StatusHttp;
 
-#[endpoint]
+#[endpoint(standalone)]
 impl StatusHttp {
     #[get("status.read", "/status")]
     #[openapi(r#"{"summary":"Read internal status"}"#)]

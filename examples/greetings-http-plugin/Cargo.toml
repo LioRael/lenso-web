@@ -1,0 +1,20 @@
+[package]
+name = "lenso-web-greetings-plugin-example"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[package.metadata.lenso]
+plugin-id = "company.greetings-http"
+root-slot = "web"
+
+[dependencies]
+lenso.workspace = true
+lenso-capability-http-endpoint = { path = "../../crates/lenso-capability-http-endpoint" }
+serde.workspace = true
+
+[dev-dependencies]
+futures.workspace = true
+
+[lints]
+workspace = true

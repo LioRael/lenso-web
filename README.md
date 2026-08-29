@@ -78,6 +78,7 @@ Endpoint providers can put route attributes directly on handlers. The outer
 Capability description and handler dispatch:
 
 ```rust,ignore
+#[lenso::plugin]
 #[derive(Clone, Debug)]
 struct OrdersHttp;
 
@@ -97,30 +98,24 @@ impl OrdersHttp {
     async fn create(
         &self,
         Json(_order): Json<CreateOrder>,
-    ) -> Result<HandleResponse, EndpointHandleInvocationError> {
-        Ok(response::json(
-            StatusCode::CREATED,
-            &CreatedOrder { id: "order-42" },
-        )?.with_header(
-            &header::LOCATION,
-            &HeaderValue::from_static("/orders/order-42"),
-        )?)
+    ) -> Result<(StatusCode, Json<CreatedOrder<'static>>), Problem> {
+        Ok((StatusCode::CREATED, Json(CreatedOrder { id: "order-42" })))
     }
 }
 ```
 
-The omitted imports are available from
-`lenso_capability_http_endpoint::response`: `response`, `StatusCode`,
-`HeaderValue`, and `header`. Common responses use `response::json`,
-`response::problem`, `response::text`, or `response::empty`; direct construction
-of the generated wire DTO is only needed for unusual binary bodies.
+`#[lenso::plugin]` declares the Plugin boundary. `#[endpoint]` publishes its
+HTTP Endpoint Capability and generates route description and dispatch from the
+same handler declarations. `Json<T>` and `(StatusCode, T)` implement
+`IntoResponse`; `Problem` is the typed intentional-error response. Lower-level
+response and header helpers remain available for unusual responses.
 
 The supported method attributes are `get`, `post`, `put`, `patch`, `delete`,
-`head`, and `options`. Each handler declares its stable route ID and path.
+`head`, `options`, and `query`. Each handler declares its stable route ID and path.
 `http_endpoint!` remains available for existing providers and generated source
 that prefers one explicit route table.
 
-Attribute-authored handlers may use `Path<T>`, `Query<T>`, `Json<T>`, and
+Attribute-authored handlers may use `Path<T>`, `QueryParams<T>`, `Json<T>`, and
 `RequestId` extractors. Middleware on the `impl` applies to every route;
 route-owned middleware follows it, before extraction:
 

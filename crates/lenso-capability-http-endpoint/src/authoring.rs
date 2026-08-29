@@ -369,6 +369,7 @@ pub mod __private {
     pub use lenso_kernel::InvocationContext;
 
     pub use super::validate_endpoint_routes;
+    pub use crate::response::IntoEndpointResult;
     pub use crate::{ExtractorRejection, FromRequest, MiddlewareOutcome};
 }
 

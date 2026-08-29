@@ -6,7 +6,9 @@ pub use http::{HeaderName, HeaderValue, StatusCode, header};
 use lenso_kernel::RuntimeFailure;
 use serde::Serialize;
 
-use crate::{EndpointHandleInvocationError, HandleResponse, HandleResponseHeadersItem};
+use crate::{
+    EndpointHandleInvocationError, HandleError, HandleResponse, HandleResponseHeadersItem, Json,
+};
 
 const JSON_CONTENT_TYPE: &str = "application/json; charset=utf-8";
 const PROBLEM_CONTENT_TYPE: &str = "application/problem+json; charset=utf-8";
@@ -48,6 +50,125 @@ impl From<ResponseBuildError> for EndpointHandleInvocationError {
     }
 }
 
+/// Converts one typed handler value into the portable HTTP response contract.
+pub trait IntoResponse {
+    /// Builds the response or preserves a serialization/header failure.
+    fn into_response(self) -> Result<HandleResponse, ResponseBuildError>;
+}
+
+impl IntoResponse for HandleResponse {
+    fn into_response(self) -> Result<HandleResponse, ResponseBuildError> {
+        Ok(self)
+    }
+}
+
+impl<T> IntoResponse for Json<T>
+where
+    T: Serialize,
+{
+    fn into_response(self) -> Result<HandleResponse, ResponseBuildError> {
+        json(StatusCode::OK, &self.0)
+    }
+}
+
+impl<T> IntoResponse for (StatusCode, T)
+where
+    T: IntoResponse,
+{
+    fn into_response(self) -> Result<HandleResponse, ResponseBuildError> {
+        let (status, body) = self;
+        let mut response = body.into_response()?;
+        response.status = i64::from(status.as_u16());
+        Ok(response)
+    }
+}
+
+/// One intentional RFC 9457-compatible HTTP problem returned by a handler.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct Problem {
+    #[serde(rename = "type")]
+    type_uri: &'static str,
+    title: String,
+    status: u16,
+    detail: String,
+    code: String,
+}
+
+impl Problem {
+    /// Creates a problem with a stable machine-readable code.
+    #[must_use]
+    pub fn new(status: StatusCode, code: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            type_uri: "about:blank",
+            title: status.canonical_reason().unwrap_or("HTTP error").to_owned(),
+            status: status.as_u16(),
+            detail: detail.into(),
+            code: code.into(),
+        }
+    }
+}
+
+impl IntoResponse for Problem {
+    fn into_response(self) -> Result<HandleResponse, ResponseBuildError> {
+        Ok(with_content_type(
+            StatusCode::from_u16(self.status).expect("Problem stores a validated HTTP status"),
+            PROBLEM_CONTENT_TYPE,
+            serde_json::to_vec(&self).expect("serializing a string-only problem cannot fail"),
+        ))
+    }
+}
+
+/// Converts a typed handler error into an intentional response or Capability failure.
+#[doc(hidden)]
+pub trait IntoEndpointError {
+    fn into_endpoint_error(self) -> Result<HandleResponse, EndpointHandleInvocationError>;
+}
+
+impl<T> IntoEndpointError for T
+where
+    T: IntoResponse,
+{
+    fn into_endpoint_error(self) -> Result<HandleResponse, EndpointHandleInvocationError> {
+        self.into_response().map_err(Into::into)
+    }
+}
+
+impl IntoEndpointError for EndpointHandleInvocationError {
+    fn into_endpoint_error(self) -> Result<HandleResponse, EndpointHandleInvocationError> {
+        Err(self)
+    }
+}
+
+/// Lowers one typed handler result into the generated Endpoint contract.
+#[doc(hidden)]
+pub trait IntoEndpointResult {
+    fn into_endpoint_result(self) -> Result<Result<HandleResponse, HandleError>, RuntimeFailure>;
+}
+
+impl<T, E> IntoEndpointResult for Result<T, E>
+where
+    T: IntoResponse,
+    E: IntoEndpointError,
+{
+    fn into_endpoint_result(self) -> Result<Result<HandleResponse, HandleError>, RuntimeFailure> {
+        match self {
+            Ok(response) => {
+                response
+                    .into_response()
+                    .map(Ok)
+                    .map_err(|error| RuntimeFailure::Internal {
+                        detail: error.to_string(),
+                    })
+            }
+            Err(error) => match error.into_endpoint_error() {
+                Ok(response) => Ok(Ok(response)),
+                Err(EndpointHandleInvocationError::Domain(error)) => Ok(Err(error)),
+                Err(EndpointHandleInvocationError::Runtime(error)) => Err(error),
+            },
+        }
+    }
+}
+
 /// Serializes a typed value and returns a JSON response.
 pub fn json(
     status: StatusCode,
@@ -66,28 +187,9 @@ pub fn problem(
     code: impl Into<String>,
     detail: impl Into<String>,
 ) -> HandleResponse {
-    #[derive(Serialize)]
-    struct Problem {
-        r#type: &'static str,
-        title: String,
-        status: u16,
-        detail: String,
-        code: String,
-    }
-
-    let code = code.into();
-    let problem = Problem {
-        r#type: "about:blank",
-        title: status.canonical_reason().unwrap_or("HTTP error").to_owned(),
-        status: status.as_u16(),
-        detail: detail.into(),
-        code,
-    };
-    with_content_type(
-        status,
-        PROBLEM_CONTENT_TYPE,
-        serde_json::to_vec(&problem).expect("serializing a string-only problem cannot fail"),
-    )
+    Problem::new(status, code, detail)
+        .into_response()
+        .expect("serializing a string-only problem cannot fail")
 }
 
 /// Returns a UTF-8 plain-text response.

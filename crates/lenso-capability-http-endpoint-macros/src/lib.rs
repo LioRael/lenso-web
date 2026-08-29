@@ -16,23 +16,29 @@ use syn::{
 /// Generates one HTTP Endpoint provider from handler route attributes.
 ///
 /// Supported handler attributes are `get`, `post`, `put`, `patch`, `delete`,
-/// `head`, and `options`. Each accepts a stable route ID and path. One or more
+/// `head`, `options`, and `query`. Each accepts a stable route ID and path. One or more
 /// `middleware` attributes may name async provider methods that run before the
 /// handler and its typed request extractors. Middleware on the impl applies to
 /// every route before route-specific middleware.
 #[proc_macro_attribute]
 pub fn endpoint(arguments: TokenStream, input: TokenStream) -> TokenStream {
-    if !arguments.is_empty() {
-        return Error::new(
-            proc_macro2::Span::call_site(),
-            "endpoint does not accept arguments",
-        )
-        .into_compile_error()
-        .into();
-    }
+    let register_plugin = if arguments.is_empty() {
+        true
+    } else {
+        let mode = parse_macro_input!(arguments as Ident);
+        if mode != "standalone" {
+            return Error::new_spanned(
+                mode,
+                "endpoint accepts only the internal `standalone` mode",
+            )
+            .into_compile_error()
+            .into();
+        }
+        false
+    };
 
     let implementation = parse_macro_input!(input as ItemImpl);
-    expand_endpoint(implementation)
+    expand_endpoint_with_registration(implementation, register_plugin)
         .unwrap_or_else(Error::into_compile_error)
         .into()
 }
@@ -50,7 +56,15 @@ pub fn openapi_operation(input: TokenStream) -> TokenStream {
     }
 }
 
-fn expand_endpoint(mut implementation: ItemImpl) -> Result<proc_macro2::TokenStream> {
+#[cfg(test)]
+fn expand_endpoint(implementation: ItemImpl) -> Result<proc_macro2::TokenStream> {
+    expand_endpoint_with_registration(implementation, true)
+}
+
+fn expand_endpoint_with_registration(
+    mut implementation: ItemImpl,
+    register_plugin: bool,
+) -> Result<proc_macro2::TokenStream> {
     if implementation.trait_.is_some() {
         return Err(Error::new_spanned(
             implementation.impl_token,
@@ -101,6 +115,8 @@ fn expand_endpoint(mut implementation: ItemImpl) -> Result<proc_macro2::TokenStr
     let const_routes = routes.iter().map(endpoint_route);
     let implementation_routes = routes.iter().map(endpoint_route);
     let dispatch_arms = routes.iter().map(dispatch_arm);
+    let plugin_registration =
+        register_plugin.then(|| quote!(#[lenso::provides(http_endpoint_contract::Endpoint)]));
 
     Ok(quote! {
         #implementation
@@ -112,6 +128,7 @@ fn expand_endpoint(mut implementation: ItemImpl) -> Result<proc_macro2::TokenStr
             ::lenso_capability_http_endpoint::__private::validate_endpoint_routes(ROUTES);
         };
 
+        #plugin_registration
         impl ::lenso_capability_http_endpoint::HttpEndpoint for #provider {
             const ROUTES: &'static [::lenso_capability_http_endpoint::EndpointRoute] = &[
                 #(#implementation_routes)*
@@ -513,15 +530,9 @@ fn dispatch_arm(handler: &Handler) -> proc_macro2::TokenStream {
             #mutable_context
             #(#extractor_steps)*
             let _ = (&context, &request);
-            match provider.#method(#(#arguments),*).await {
-                Ok(response) => Ok(Ok(response)),
-                Err(::lenso_capability_http_endpoint::EndpointHandleInvocationError::Domain(
-                    error,
-                )) => Ok(Err(error)),
-                Err(::lenso_capability_http_endpoint::EndpointHandleInvocationError::Runtime(
-                    error,
-                )) => Err(error),
-            }
+            ::lenso_capability_http_endpoint::__private::IntoEndpointResult::into_endpoint_result(
+                provider.#method(#(#arguments),*).await,
+            )
         }
     }
 }
@@ -536,6 +547,7 @@ fn http_method(attribute: &Attribute) -> Option<&'static str> {
         ("delete", "DELETE"),
         ("head", "HEAD"),
         ("options", "OPTIONS"),
+        ("query", "QUERY"),
     ]
     .into_iter()
     .find_map(|(attribute, method)| path.is_ident(attribute).then_some(method))

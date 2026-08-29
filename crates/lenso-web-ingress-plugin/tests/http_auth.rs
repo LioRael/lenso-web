@@ -325,7 +325,7 @@ struct AuthenticatedOrdersHttp {
     dependencies: Rc<RefCell<Option<EndpointDependencies>>>,
 }
 
-#[endpoint]
+#[endpoint(standalone)]
 impl AuthenticatedOrdersHttp {
     #[get("orders.read", "/orders/{order_id}")]
     async fn read(
