@@ -87,11 +87,11 @@ where
     }
 }
 
-/// The URL query string decoded into `T`.
+/// The URL query parameters decoded into `T`.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Query<T>(pub T);
+pub struct QueryParams<T>(pub T);
 
-impl<P, T> FromRequest<P> for Query<T>
+impl<P, T> FromRequest<P> for QueryParams<T>
 where
     P: ?Sized,
     T: DeserializeOwned + 'static,
@@ -161,12 +161,12 @@ where
         .map_err(|_| invalid_path())
 }
 
-fn extract_query<T>(request: &HandleRequest) -> Result<Query<T>, ExtractorRejection>
+fn extract_query<T>(request: &HandleRequest) -> Result<QueryParams<T>, ExtractorRejection>
 where
     T: DeserializeOwned,
 {
     serde_urlencoded::from_str(request.query.as_deref().unwrap_or_default())
-        .map(Query)
+        .map(QueryParams)
         .map_err(|_| {
             response::problem(
                 response::StatusCode::BAD_REQUEST,

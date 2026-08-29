@@ -864,7 +864,7 @@ struct SdkOrdersEndpoint {
     observed: Rc<RefCell<Option<HandleRequest>>>,
 }
 
-#[endpoint]
+#[endpoint(standalone)]
 impl SdkOrdersEndpoint {
     #[get("sdk.orders.read", "/sdk/orders/{order_id}")]
     async fn read(

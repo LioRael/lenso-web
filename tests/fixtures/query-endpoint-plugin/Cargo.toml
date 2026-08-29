@@ -1,0 +1,18 @@
+[package]
+name = "lenso-web-query-endpoint-fixture"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[package.metadata.lenso]
+plugin-id = "lenso.web-query-endpoint-fixture"
+root-slot = "web"
+
+[dependencies]
+lenso.workspace = true
+lenso-capability-http-endpoint = { path = "../../../crates/lenso-capability-http-endpoint" }
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

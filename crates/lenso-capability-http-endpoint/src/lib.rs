@@ -3,6 +3,7 @@
 mod authoring;
 mod extract;
 pub mod response;
+pub mod testing;
 
 #[allow(unknown_lints)]
 #[allow(
@@ -16,9 +17,27 @@ mod generated {
 }
 
 pub use authoring::{EndpointFuture, EndpointRoute, HttpEndpoint, MiddlewareOutcome};
-pub use extract::{ExtractorFuture, ExtractorRejection, FromRequest, Json, Path, Query, RequestId};
+/// Deprecated compatibility name for [`QueryParams`].
+#[deprecated(
+    since = "0.3.0",
+    note = "use QueryParams to distinguish URL parameters from the QUERY HTTP method"
+)]
+pub use extract::QueryParams as Query;
+pub use extract::{
+    ExtractorFuture, ExtractorRejection, FromRequest, Json, Path, QueryParams, RequestId,
+};
 pub use generated::*;
 pub use lenso_capability_http_endpoint_macros::{endpoint, openapi_operation};
+
+/// Common imports for HTTP Endpoint Plugin authors.
+pub mod prelude {
+    pub use crate as http_endpoint_contract;
+    pub use crate::{
+        EndpointHandleInvocationError, HandleRequest, HandleResponse, Json, MiddlewareOutcome,
+        Path, QueryParams, RequestId, endpoint,
+        response::{IntoResponse, Problem, StatusCode},
+    };
+}
 
 #[doc(hidden)]
 pub use authoring::{__private, validate_endpoint_routes};

@@ -8,6 +8,8 @@ members = [
     "crates/lenso-http-auth",
     "crates/lenso-web-ingress-plugin",
     "crates/lenso-openapi-plugin",
+    "examples/greetings-http-plugin",
+    "tests/fixtures/query-endpoint-plugin",
 ]
 
 [workspace.package]

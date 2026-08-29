@@ -2,13 +2,16 @@ use std::{cell::RefCell, rc::Rc};
 
 use futures::executor::block_on;
 use lenso_capability_http_endpoint::{
-    DescribeRequest, EndpointHandleInvocationError, EndpointProvider, HandleRequest,
-    HandleRequestHeadersItem, HandleResponse, HandleResponseHeadersItem, Json, MiddlewareOutcome,
-    Path, Query, RequestId, endpoint,
+    self as http_endpoint_contract, DescribeRequest, EndpointHandleInvocationError,
+    EndpointProvider, HandleRequest, HandleRequestHeadersItem, HandleResponse,
+    HandleResponseHeadersItem, Json, MiddlewareOutcome, Path, QueryParams, RequestId, endpoint,
+    response::{Problem, StatusCode},
+    testing::EndpointTest,
 };
 use lenso_kernel::{CancellationToken, InvocationContext};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
+#[lenso::plugin]
 #[derive(Clone, Debug, Default)]
 struct OrdersHttp {
     handled: Rc<RefCell<Vec<&'static str>>>,
@@ -52,10 +55,17 @@ impl OrdersHttp {
         &self,
         _context: InvocationContext,
         Json(order): Json<CreateOrder>,
-    ) -> Result<HandleResponse, EndpointHandleInvocationError> {
+    ) -> Result<(StatusCode, Json<CreatedOrder>), Problem> {
         futures::future::ready(()).await;
+        if order.id.is_empty() {
+            return Err(Problem::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_order_id",
+                "id must not be empty",
+            ));
+        }
         self.handled.borrow_mut().push("create");
-        Ok(json_response(201, &format!(r#"{{"id":"{}"}}"#, order.id)))
+        Ok((StatusCode::CREATED, Json(CreatedOrder { id: order.id })))
     }
 
     #[middleware(observe)]
@@ -78,7 +88,7 @@ impl OrdersHttp {
     #[get("orders.list", "/orders")]
     async fn list(
         &self,
-        Query(query): Query<ListOrders>,
+        QueryParams(query): QueryParams<ListOrders>,
     ) -> Result<HandleResponse, EndpointHandleInvocationError> {
         futures::future::ready(()).await;
         Ok(json_response(
@@ -86,10 +96,27 @@ impl OrdersHttp {
             &format!(r#"{{"limit":{}}}"#, query.limit),
         ))
     }
+
+    #[query("orders.search", "/orders/search")]
+    async fn search(
+        &self,
+        Json(filter): Json<SearchOrders>,
+    ) -> Result<HandleResponse, EndpointHandleInvocationError> {
+        futures::future::ready(()).await;
+        Ok(json_response(
+            200,
+            &format!(r#"{{"term":"{}"}}"#, filter.term),
+        ))
+    }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct CreateOrder {
+    id: String,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
+struct CreatedOrder {
     id: String,
 }
 
@@ -103,13 +130,18 @@ struct ListOrders {
     limit: u16,
 }
 
+#[derive(Debug, Deserialize)]
+struct SearchOrders {
+    term: String,
+}
+
 #[test]
 fn handler_attributes_generate_description_and_dispatch() {
     let endpoint = OrdersHttp::default();
     let description = block_on(endpoint.describe(context(1), DescribeRequest {}))
         .unwrap()
         .unwrap();
-    assert_eq!(description.routes.len(), 3);
+    assert_eq!(description.routes.len(), 4);
     assert_eq!(description.routes[0].route_id, "orders.create");
     assert_eq!(description.routes[0].method, "POST");
     assert_eq!(description.routes[0].path, "/orders");
@@ -131,6 +163,8 @@ fn handler_attributes_generate_description_and_dispatch() {
     );
     assert!(description.routes[0].openapi.as_ref().unwrap()["x-example"].is_null());
     assert_eq!(description.routes[1].route_id, "orders.read");
+    assert_eq!(description.routes[3].route_id, "orders.search");
+    assert_eq!(description.routes[3].method, "QUERY");
 
     let response = block_on(endpoint.handle(
         context(2),
@@ -141,6 +175,37 @@ fn handler_attributes_generate_description_and_dispatch() {
     assert_eq!(response.status, 200);
     assert_eq!(response.body.as_slice(), br#"{"id":"order-42"}"#);
     assert_eq!(*endpoint.handled.borrow(), ["global", "middleware", "read"]);
+}
+
+#[test]
+fn endpoint_declares_the_http_capability_for_its_plugin() {
+    let descriptor: serde_json::Value = serde_json::from_str(PLUGIN_DESCRIPTOR_JSON).unwrap();
+    assert_eq!(
+        descriptor["provided_capabilities"][0]["capability_id"],
+        "lenso.http.endpoint@1"
+    );
+    assert_eq!(
+        descriptor["provided_capabilities"][0]["descriptor_version"],
+        "1.1.0"
+    );
+}
+
+#[test]
+fn query_method_dispatches_a_request_with_content() {
+    let endpoint = OrdersHttp::default();
+    let mut search = request("orders.search");
+    search.method = "QUERY".to_owned();
+    search.body = br#"{"term":"open orders"}"#.as_slice().into();
+    search.headers.push(HandleRequestHeadersItem {
+        name: "content-type".to_owned(),
+        value: "application/json".to_owned(),
+    });
+
+    let response = block_on(endpoint.handle(context(7), search))
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.as_slice(), br#"{"term":"open orders"}"#);
 }
 
 #[test]
@@ -182,6 +247,51 @@ fn json_extractor_rejects_invalid_content_type_before_the_handler() {
     assert_eq!(response.status, 201);
     assert_eq!(response.body.as_slice(), br#"{"id":"order-42"}"#);
     assert_eq!(*endpoint.handled.borrow(), ["global", "global", "create"]);
+}
+
+#[test]
+fn typed_problem_errors_become_intentional_http_responses() {
+    let endpoint = OrdersHttp::default();
+    let mut rejected = request("orders.create");
+    rejected.body = br#"{"id":""}"#.as_slice().into();
+    rejected.headers.push(HandleRequestHeadersItem {
+        name: "content-type".to_owned(),
+        value: "application/json".to_owned(),
+    });
+
+    let response = block_on(endpoint.handle(context(8), rejected))
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.status, 422);
+    assert_eq!(
+        response.headers[0].value,
+        "application/problem+json; charset=utf-8"
+    );
+    let body: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+    assert_eq!(body["code"], "invalid_order_id");
+}
+
+#[test]
+fn endpoint_test_exercises_typed_handlers_without_a_socket() {
+    let response = block_on(async {
+        EndpointTest::new(OrdersHttp::default())
+            .request("orders.create")
+            .json(&CreateOrder {
+                id: "order-84".to_owned(),
+            })
+            .unwrap()
+            .send()
+            .await
+            .unwrap()
+    });
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(
+        response.json::<CreatedOrder>().unwrap(),
+        CreatedOrder {
+            id: "order-84".to_owned(),
+        }
+    );
 }
 
 fn request(route_id: &str) -> HandleRequest {
