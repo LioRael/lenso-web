@@ -31,6 +31,30 @@
     },
     "request_timeout_millis": {
       "type": "integer"
+    },
+    "session_cookie": {
+      "type": "object",
+      "required": ["name", "csrf_cookie_name", "csrf_header_name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^__Host-[!#$%&'*+.^_`|~0-9A-Za-z-]*$"
+        },
+        "csrf_cookie_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^__Host-[!#$%&'*+.^_`|~0-9A-Za-z-]*$"
+        },
+        "csrf_header_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false

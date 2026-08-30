@@ -39,17 +39,14 @@ use crate::{
     replication::{ReplicaConnection, ReplicaConnectionSource},
     routing::DispatchError,
     routing::RouteTable,
+    session_cookie::{
+        CredentialEvidence, CredentialRejection, SessionCookiePolicy, select_credential,
+    },
 };
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 const NOSNIFF_HEADER: HeaderName = HeaderName::from_static("x-content-type-options");
 const IDLE_CONNECTION_CLOSE_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
-
-#[derive(Debug)]
-pub(super) struct CredentialEvidence {
-    pub(super) scheme: String,
-    pub(super) value: String,
-}
 
 #[derive(Debug)]
 pub(super) struct InboundHeader {
@@ -63,6 +60,7 @@ pub(super) struct InboundRequest {
     pub(super) cancellation: CancellationToken,
     pub(super) credential: Option<CredentialEvidence>,
     pub(super) disconnected: oneshot::Receiver<()>,
+    csrf_header_name: Option<HeaderName>,
     pub(super) headers: Vec<InboundHeader>,
     pub(super) method: Method,
     pub(super) path: String,
@@ -73,6 +71,16 @@ pub(super) struct InboundRequest {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RequestRejection {
     BadRequest,
+    CsrfForbidden,
+}
+
+impl From<CredentialRejection> for RequestRejection {
+    fn from(value: CredentialRejection) -> Self {
+        match value {
+            CredentialRejection::BadRequest => Self::BadRequest,
+            CredentialRejection::CsrfForbidden => Self::CsrfForbidden,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -84,6 +92,7 @@ struct IngressService {
     global_concurrency: Arc<Semaphore>,
     local_concurrency: Option<Arc<Semaphore>>,
     activity: Option<ConnectionActivity>,
+    session_cookie: Option<SessionCookiePolicy>,
     next_request_id: RequestIdSequence,
 }
 
@@ -310,6 +319,7 @@ pub(super) async fn serve(
     let connection_concurrency = source.connection_concurrency(config.max_connections());
     let (global_concurrency, local_concurrency) =
         source.request_concurrency(config.max_concurrent_requests());
+    let session_cookie = config.session_cookie().map(SessionCookiePolicy::from);
     let service = IngressService {
         cancellation: cancellation.clone(),
         global_concurrency,
@@ -318,6 +328,7 @@ pub(super) async fn serve(
         config,
         middleware,
         routes,
+        session_cookie,
         next_request_id,
     };
     let (shutdown, _) = tokio::sync::watch::channel(false);
@@ -471,7 +482,7 @@ impl IngressService {
         mut request: Request<Incoming>,
     ) -> Result<Response<Full<Bytes>>, Infallible> {
         let _active_request = self.activity.as_ref().map(ConnectionActivity::begin);
-        mark_sensitive_headers(request.headers_mut());
+        mark_sensitive_headers(request.headers_mut(), self.session_cookie.as_ref());
         let request_head_len = canonical_request_head_len(&request);
         let request_id = replace_request_id(request.headers_mut(), &self.next_request_id);
         let response = if request_head_len > self.config.max_request_head_bytes() {
@@ -544,9 +555,10 @@ impl IngressService {
             body,
             self.cancellation.clone(),
             disconnected,
+            self.session_cookie.as_ref(),
         ) {
             Ok(request) => request,
-            Err(RequestRejection::BadRequest) => return bad_request(),
+            Err(rejection) => return request_rejection(rejection),
         };
         let (request, control) = middleware_request(request, parts.version);
         let routes = self.routes.clone();
@@ -557,9 +569,7 @@ impl IngressService {
                     match request {
                         Ok(request) => dispatch_response(routes.dispatch(request).await)
                             .into_middleware_response(),
-                        Err(RequestRejection::BadRequest) => {
-                            bad_request().into_middleware_response()
-                        }
+                        Err(rejection) => request_rejection(rejection).into_middleware_response(),
                     }
                 }
             }))
@@ -576,6 +586,7 @@ impl IngressService {
 struct InboundRequestControl {
     cancellation: CancellationToken,
     credential: Option<CredentialEvidence>,
+    csrf_header_name: Option<HeaderName>,
     disconnected: oneshot::Receiver<()>,
     request_id: String,
 }
@@ -588,6 +599,7 @@ fn middleware_request(
         body,
         cancellation,
         credential,
+        csrf_header_name,
         disconnected,
         headers,
         method,
@@ -618,6 +630,7 @@ fn middleware_request(
         InboundRequestControl {
             cancellation,
             credential,
+            csrf_header_name,
             disconnected,
             request_id,
         },
@@ -632,7 +645,14 @@ fn restore_inbound_request(
     let headers = request
         .headers()
         .iter()
-        .filter(|(name, _)| !is_filtered_request_header(name) && !connection_owned.contains(*name))
+        .filter(|(name, _)| {
+            !is_filtered_request_header(name)
+                && !control
+                    .csrf_header_name
+                    .as_ref()
+                    .is_some_and(|csrf| csrf == *name)
+                && !connection_owned.contains(*name)
+        })
         .map(|(name, value)| {
             value
                 .to_str()
@@ -647,6 +667,7 @@ fn restore_inbound_request(
         body: request.body().clone(),
         cancellation: control.cancellation,
         credential: control.credential,
+        csrf_header_name: control.csrf_header_name,
         disconnected: control.disconnected,
         headers,
         method: normalized_method(request.method()),
@@ -726,9 +747,12 @@ fn dispatch_response(result: Result<HandleResponse, DispatchError>) -> IngressRe
     }
 }
 
-fn mark_sensitive_headers(headers: &mut HeaderMap) {
+fn mark_sensitive_headers(headers: &mut HeaderMap, session_cookie: Option<&SessionCookiePolicy>) {
     for (name, value) in headers.iter_mut() {
-        if name == AUTHORIZATION || name == COOKIE {
+        if name == AUTHORIZATION
+            || name == COOKIE
+            || session_cookie.is_some_and(|policy| name == policy.csrf_header_name())
+        {
             value.set_sensitive(true);
         }
     }
@@ -803,13 +827,19 @@ fn inbound_request(
     body: Bytes,
     cancellation: CancellationToken,
     disconnected: oneshot::Receiver<()>,
+    session_cookie: Option<&SessionCookiePolicy>,
 ) -> Result<InboundRequest, RequestRejection> {
     let request_id = request_id(headers)?;
-    let credential = credential(headers)?;
+    let credential = select_credential(method, headers, session_cookie)?;
+    let csrf_header_name = session_cookie.map(|policy| policy.csrf_header_name().clone());
     let connection_owned = connection_owned_headers(headers)?;
     let headers = headers
         .iter()
-        .filter(|(name, _)| !is_filtered_request_header(name) && !connection_owned.contains(*name))
+        .filter(|(name, _)| {
+            !is_filtered_request_header(name)
+                && !csrf_header_name.as_ref().is_some_and(|csrf| csrf == *name)
+                && !connection_owned.contains(*name)
+        })
         .map(|(name, value)| {
             value
                 .to_str()
@@ -824,6 +854,7 @@ fn inbound_request(
         body,
         cancellation,
         credential,
+        csrf_header_name,
         disconnected,
         headers,
         method: normalized_method(method),
@@ -930,29 +961,19 @@ fn request_id(headers: &HeaderMap) -> Result<String, RequestRejection> {
     Ok(request_id.to_owned())
 }
 
-fn credential(headers: &HeaderMap) -> Result<Option<CredentialEvidence>, RequestRejection> {
-    let mut values = headers.get_all(AUTHORIZATION).iter();
-    let Some(value) = values.next() else {
-        return Ok(None);
-    };
-    if values.next().is_some() {
-        return Err(RequestRejection::BadRequest);
-    }
-    let value = value.to_str().map_err(|_| RequestRejection::BadRequest)?;
-    let Some((scheme, value)) = value.split_once(' ') else {
-        return Err(RequestRejection::BadRequest);
-    };
-    if scheme.is_empty() || value.is_empty() {
-        return Err(RequestRejection::BadRequest);
-    }
-    Ok(Some(CredentialEvidence {
-        scheme: scheme.to_ascii_lowercase(),
-        value: value.to_owned(),
-    }))
-}
-
 fn bad_request() -> IngressResponse {
     IngressResponse::json(StatusCode::BAD_REQUEST, r#"{"error":"bad_request"}"#)
+}
+
+fn csrf_forbidden() -> IngressResponse {
+    IngressResponse::json(StatusCode::FORBIDDEN, r#"{"error":"csrf_rejected"}"#)
+}
+
+fn request_rejection(rejection: RequestRejection) -> IngressResponse {
+    match rejection {
+        RequestRejection::BadRequest => bad_request(),
+        RequestRejection::CsrfForbidden => csrf_forbidden(),
+    }
 }
 
 fn payload_too_large() -> IngressResponse {

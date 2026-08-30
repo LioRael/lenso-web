@@ -1,5 +1,6 @@
 use std::{net::SocketAddr, time::Duration};
 
+use http::HeaderName;
 use serde::{Deserialize, Serialize};
 
 const MAX_TRANSFER_BYTES: usize = 64 * 1024 * 1024;
@@ -7,6 +8,81 @@ const MAX_HEAD_BYTES: usize = 1024 * 1024;
 const MAX_CONCURRENT_REQUESTS: usize = 4_096;
 const MAX_CONNECTIONS: usize = 65_536;
 const MAX_TIMEOUT_MILLIS: u64 = 300_000;
+const MAX_PROTOCOL_NAME_BYTES: usize = 128;
+
+/// Cookie-based session and double-submit CSRF policy for one Ingress Instance.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionCookieConfig {
+    name: String,
+    csrf_cookie_name: String,
+    csrf_header_name: String,
+}
+
+impl SessionCookieConfig {
+    /// Creates one cookie authentication policy with a fixed `session` credential scheme.
+    pub fn new(
+        name: impl Into<String>,
+        csrf_cookie_name: impl Into<String>,
+        csrf_header_name: impl Into<String>,
+    ) -> Result<Self, String> {
+        let value = Self {
+            name: name.into(),
+            csrf_cookie_name: csrf_cookie_name.into(),
+            csrf_header_name: csrf_header_name.into(),
+        };
+        value.validate()?;
+        Ok(value)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if !host_cookie_name(&self.name)
+            || !host_cookie_name(&self.csrf_cookie_name)
+            || self.name == self.csrf_cookie_name
+        {
+            return Err(
+                "Web Ingress requires distinct __Host- session and CSRF cookie names".to_owned(),
+            );
+        }
+        if self.csrf_header_name.is_empty() || self.csrf_header_name.len() > MAX_PROTOCOL_NAME_BYTES
+        {
+            return Err("Web Ingress CSRF header name is invalid".to_owned());
+        }
+        let header = HeaderName::from_bytes(self.csrf_header_name.as_bytes())
+            .map_err(|_| "Web Ingress CSRF header name is invalid".to_owned())?;
+        if [
+            "authorization",
+            "connection",
+            "content-length",
+            "cookie",
+            "host",
+            "keep-alive",
+            "proxy-connection",
+            "te",
+            "trailer",
+            "transfer-encoding",
+            "upgrade",
+            "x-request-id",
+        ]
+        .contains(&header.as_str())
+        {
+            return Err("Web Ingress CSRF header must be a dedicated request header".to_owned());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub(crate) fn csrf_cookie_name(&self) -> &str {
+        &self.csrf_cookie_name
+    }
+
+    pub(crate) fn csrf_header_name(&self) -> &str {
+        &self.csrf_header_name
+    }
+}
 
 /// Immutable HTTP policy for one Web Ingress Plugin Instance.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -32,6 +108,8 @@ pub struct WebIngressConfig {
     shutdown_grace_timeout_millis: u64,
     #[serde(default = "default_request_timeout_millis")]
     request_timeout_millis: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session_cookie: Option<SessionCookieConfig>,
 }
 
 impl Default for WebIngressConfig {
@@ -47,6 +125,7 @@ impl Default for WebIngressConfig {
             connection_idle_timeout_millis: default_connection_idle_timeout_millis(),
             shutdown_grace_timeout_millis: default_shutdown_grace_timeout_millis(),
             request_timeout_millis: default_request_timeout_millis(),
+            session_cookie: None,
         }
     }
 }
@@ -116,6 +195,13 @@ impl WebIngressConfig {
         Ok(self)
     }
 
+    /// Enables one named session Cookie and its double-submit CSRF policy.
+    pub fn with_session_cookie(mut self, policy: SessionCookieConfig) -> Result<Self, String> {
+        self.session_cookie = Some(policy);
+        self.validate()?;
+        Ok(self)
+    }
+
     pub(crate) fn validate(&self) -> Result<(), String> {
         if !(1..=MAX_TRANSFER_BYTES).contains(&self.max_request_body_bytes)
             || !(1..=MAX_HEAD_BYTES).contains(&self.max_request_head_bytes)
@@ -128,6 +214,9 @@ impl WebIngressConfig {
             || !(1..=MAX_TIMEOUT_MILLIS).contains(&self.request_timeout_millis)
         {
             return Err("Web Ingress limits or timeout are invalid".to_owned());
+        }
+        if let Some(policy) = &self.session_cookie {
+            policy.validate()?;
         }
         Ok(())
     }
@@ -180,6 +269,39 @@ impl WebIngressConfig {
     pub(crate) fn shutdown_grace_timeout(&self) -> Duration {
         Duration::from_millis(self.shutdown_grace_timeout_millis)
     }
+
+    pub(crate) const fn session_cookie(&self) -> Option<&SessionCookieConfig> {
+        self.session_cookie.as_ref()
+    }
+}
+
+fn valid_http_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_PROTOCOL_NAME_BYTES
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'!' | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'|'
+                        | b'~'
+                )
+        })
+}
+
+fn host_cookie_name(value: &str) -> bool {
+    value.starts_with("__Host-") && valid_http_token(value)
 }
 
 const fn default_bind_address() -> SocketAddr {
@@ -283,5 +405,36 @@ mod tests {
             .with_max_concurrent_requests(17)
             .unwrap();
         assert_eq!(config.endpoint_admission_limits(), (0, 17));
+    }
+
+    #[test]
+    fn session_cookie_policy_is_strict_and_round_trips() {
+        assert!(
+            !serde_json::to_string(&WebIngressConfig::default())
+                .unwrap()
+                .contains("session_cookie")
+        );
+        let policy =
+            SessionCookieConfig::new("__Host-lenso-session", "__Host-lenso-csrf", "x-csrf-token")
+                .unwrap();
+        let config = WebIngressConfig::default()
+            .with_session_cookie(policy)
+            .unwrap();
+        let encoded = serde_json::to_string(&config).unwrap();
+        assert_eq!(
+            serde_json::from_str::<WebIngressConfig>(&encoded).unwrap(),
+            config
+        );
+
+        assert!(
+            SessionCookieConfig::new("__Host-session", "__Host-session", "x-csrf-token").is_err()
+        );
+        assert!(SessionCookieConfig::new("session", "csrf", "x-csrf-token").is_err());
+        assert!(
+            SessionCookieConfig::new("__Host-bad name", "__Host-csrf", "x-csrf-token").is_err()
+        );
+        assert!(
+            SessionCookieConfig::new("__Host-session", "__Host-csrf", "authorization").is_err()
+        );
     }
 }

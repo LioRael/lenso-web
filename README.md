@@ -66,9 +66,23 @@ Customized configuration uses
   "request_body_timeout_millis": 30000,
   "connection_idle_timeout_millis": 60000,
   "shutdown_grace_timeout_millis": 30000,
-  "request_timeout_millis": 30000
+  "request_timeout_millis": 30000,
+  "session_cookie": {
+    "name": "__Host-lenso-session",
+    "csrf_cookie_name": "__Host-lenso-csrf",
+    "csrf_header_name": "x-csrf-token"
+  }
 }
 ```
+
+`session_cookie` is optional. Both configured Cookie names must use the
+`__Host-` prefix. Ingress maps the exact session Cookie to protocol-neutral
+credential scheme `session`. Unsafe Cookie-authenticated
+methods require the configured CSRF Cookie and request Header to match; missing
+or mismatched evidence is rejected before Endpoint dispatch. `Authorization`
+continues to work when no session Cookie is selected. Supplying both credentials
+is ambiguous and fails closed. Cookie and CSRF protocol headers are never
+forwarded to the Endpoint Plugin.
 
 An existing composition with empty Ingress configuration continues to receive
 these defaults without a schema. Only customized Plan configuration needs the

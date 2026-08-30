@@ -5,6 +5,7 @@ mod middleware;
 mod replication;
 mod routing;
 mod server;
+mod session_cookie;
 
 use std::{
     cell::{Cell, RefCell},
@@ -21,7 +22,7 @@ use lenso_kernel::{
 use lenso_native_adapter::{NativePluginFactory, NativePluginFactoryContext, NativePluginInstance};
 use tokio::net::TcpListener;
 
-pub use config::WebIngressConfig;
+pub use config::{SessionCookieConfig, WebIngressConfig};
 pub use middleware::{
     WebIngressMiddleware, WebIngressMiddlewareOutcome, WebIngressRequest, WebIngressResponse,
 };
