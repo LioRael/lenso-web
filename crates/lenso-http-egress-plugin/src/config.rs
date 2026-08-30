@@ -177,7 +177,7 @@ fn canonical_origin(value: &str) -> Result<String, String> {
     if value.len() > MAX_URL_BYTES {
         return Err("outbound HTTP origin is too long".to_owned());
     }
-    let url = Url::parse(value).map_err(|_| format!("invalid outbound HTTP origin `{value}`"))?;
+    let url = Url::parse(value).map_err(|_| "invalid outbound HTTP origin".to_owned())?;
     if !matches!(url.scheme(), "http" | "https")
         || url.host_str().is_none()
         || !url.username().is_empty()
@@ -186,9 +186,9 @@ fn canonical_origin(value: &str) -> Result<String, String> {
         || url.query().is_some()
         || url.fragment().is_some()
     {
-        return Err(format!("invalid outbound HTTP origin `{value}`"));
+        return Err("invalid outbound HTTP origin".to_owned());
     }
-    request_origin(&url).ok_or_else(|| format!("invalid outbound HTTP origin `{value}`"))
+    request_origin(&url).ok_or_else(|| "invalid outbound HTTP origin".to_owned())
 }
 
 fn duration_millis(duration: Duration) -> Result<u64, String> {
@@ -260,5 +260,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.http_version(), HttpVersionPolicy::Auto);
+    }
+
+    #[test]
+    fn rejected_origin_user_info_is_not_echoed_in_diagnostics() {
+        let error = HttpEgressConfig::new(["https://alice:secret@api.example.test"]).unwrap_err();
+        assert_eq!(error, "invalid outbound HTTP origin");
+        assert!(!error.contains("alice"));
+        assert!(!error.contains("secret"));
     }
 }

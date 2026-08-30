@@ -9,6 +9,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    time::Instant,
 };
 
 use bytes::{Bytes, BytesMut};
@@ -22,7 +23,10 @@ use http::{
 };
 use http_body_util::{BodyExt as _, Full};
 use hyper::{body::Incoming, service::service_fn};
-use hyper_util::{rt::TokioIo, server::conn::auto};
+use hyper_util::{
+    rt::{TokioIo, TokioTimer},
+    server::conn::auto,
+};
 use lenso_capability_http_endpoint::HandleResponse;
 use lenso_kernel::CancellationToken;
 use tokio::{
@@ -32,11 +36,14 @@ use tokio::{
 
 use crate::{
     WebIngressConfig, WebIngressMiddleware, WebIngressRequest, WebIngressResponse, middleware,
-    replication::ReplicaConnectionSource, routing::DispatchError, routing::RouteTable,
+    replication::{ReplicaConnection, ReplicaConnectionSource},
+    routing::DispatchError,
+    routing::RouteTable,
 };
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 const NOSNIFF_HEADER: HeaderName = HeaderName::from_static("x-content-type-options");
+const IDLE_CONNECTION_CLOSE_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
 
 #[derive(Debug)]
 pub(super) struct CredentialEvidence {
@@ -74,8 +81,51 @@ struct IngressService {
     config: WebIngressConfig,
     middleware: Vec<Rc<dyn WebIngressMiddleware>>,
     routes: Rc<RouteTable>,
-    concurrency: Arc<Semaphore>,
+    global_concurrency: Arc<Semaphore>,
+    local_concurrency: Option<Arc<Semaphore>>,
+    activity: Option<ConnectionActivity>,
     next_request_id: RequestIdSequence,
+}
+
+#[derive(Clone, Debug)]
+struct ConnectionActivity {
+    state: Rc<ConnectionActivityState>,
+}
+
+#[derive(Debug)]
+struct ConnectionActivityState {
+    active_requests: Cell<usize>,
+    idle_since: Cell<Instant>,
+}
+
+impl ConnectionActivity {
+    fn new() -> Self {
+        Self {
+            state: Rc::new(ConnectionActivityState {
+                active_requests: Cell::new(0),
+                idle_since: Cell::new(Instant::now()),
+            }),
+        }
+    }
+
+    fn begin(&self) -> ActiveRequest {
+        self.state
+            .active_requests
+            .set(self.state.active_requests.get().saturating_add(1));
+        ActiveRequest(self.clone())
+    }
+}
+
+struct ActiveRequest(ConnectionActivity);
+
+impl Drop for ActiveRequest {
+    fn drop(&mut self) {
+        let remaining = self.0.state.active_requests.get().saturating_sub(1);
+        self.0.state.active_requests.set(remaining);
+        if remaining == 0 {
+            self.0.state.idle_since.set(Instant::now());
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -187,10 +237,20 @@ pub(super) enum ConnectionSource {
 }
 
 impl ConnectionSource {
-    fn concurrency(&self, limit: usize) -> Arc<Semaphore> {
+    fn request_concurrency(&self, limit: usize) -> (Arc<Semaphore>, Option<Arc<Semaphore>>) {
+        match self {
+            Self::Listener(_) => (Arc::new(Semaphore::new(limit)), None),
+            Self::Replica(source) => (
+                Arc::clone(&source.global_request_concurrency),
+                Some(Arc::clone(&source.local_request_concurrency)),
+            ),
+        }
+    }
+
+    fn connection_concurrency(&self, limit: usize) -> Arc<Semaphore> {
         match self {
             Self::Listener(_) => Arc::new(Semaphore::new(limit)),
-            Self::Replica(source) => Arc::clone(&source.concurrency),
+            Self::Replica(source) => Arc::clone(&source.global_connection_concurrency),
         }
     }
 
@@ -203,16 +263,25 @@ impl ConnectionSource {
         }
     }
 
-    async fn accept(&mut self) -> std::io::Result<Option<tokio::net::TcpStream>> {
+    async fn accept(
+        &mut self,
+    ) -> std::io::Result<
+        Option<(
+            tokio::net::TcpStream,
+            Option<tokio::sync::OwnedSemaphorePermit>,
+        )>,
+    > {
         match self {
-            Self::Listener(listener) => listener.accept().await.map(|(stream, _)| Some(stream)),
-            Self::Replica(source) => loop {
-                let Some(stream) = source.receiver.recv().await else {
-                    return Ok(None);
-                };
-                if let Ok(stream) = tokio::net::TcpStream::from_std(stream) {
-                    return Ok(Some(stream));
-                }
+            Self::Listener(listener) => listener
+                .accept()
+                .await
+                .map(|(stream, _)| Some((stream, None))),
+            Self::Replica(source) => match source.receive().await? {
+                Some(ReplicaConnection { stream, permit }) => Ok(Some((
+                    tokio::net::TcpStream::from_std(stream)?,
+                    Some(permit),
+                ))),
+                None => Ok(None),
             },
         }
     }
@@ -238,9 +307,14 @@ pub(super) async fn serve(
     cancellation: CancellationToken,
 ) -> std::io::Result<()> {
     let next_request_id = source.request_ids();
+    let connection_concurrency = source.connection_concurrency(config.max_connections());
+    let (global_concurrency, local_concurrency) =
+        source.request_concurrency(config.max_concurrent_requests());
     let service = IngressService {
         cancellation: cancellation.clone(),
-        concurrency: source.concurrency(config.max_concurrent_requests()),
+        global_concurrency,
+        local_concurrency,
+        activity: None,
         config,
         middleware,
         routes,
@@ -256,8 +330,8 @@ pub(super) async fn serve(
                 return Ok(());
             }
             accepted = source.accept() => {
-                let stream = match accepted {
-                    Ok(Some(stream)) => stream,
+                let (stream, distributed_permit) = match accepted {
+                    Ok(Some(accepted)) => accepted,
                     Ok(None) => {
                         shutdown.send_replace(true);
                         while connections.next().await.is_some() {}
@@ -269,10 +343,25 @@ pub(super) async fn serve(
                         return Err(error);
                     }
                 };
-                let connection_service = service.clone();
+                let connection_permit = if let Some(permit) = distributed_permit {
+                    permit
+                } else {
+                    let Ok(permit) = Arc::clone(&connection_concurrency).try_acquire_owned()
+                    else {
+                        continue;
+                    };
+                    permit
+                };
+                let activity = ConnectionActivity::new();
+                let mut connection_service = service.clone();
+                connection_service.activity = Some(activity.clone());
                 let mut shutdown_signal = shutdown.subscribe();
                 connections.push(tokio::task::spawn_local(async move {
-                    let builder = auto::Builder::new(LocalExecutor);
+                    let _connection_permit = connection_permit;
+                    let idle_timeout = connection_service.config.connection_idle_timeout();
+                    let shutdown_grace = connection_service.config.shutdown_grace_timeout();
+                    let mut builder = auto::Builder::new(LocalExecutor);
+                    configure_protocol_limits(&mut builder, &connection_service.config);
                     let connection = builder.serve_connection(
                         TokioIo::new(stream),
                         service_fn(move |request| connection_service.clone().call(request)),
@@ -282,7 +371,20 @@ pub(super) async fn serve(
                         _ = &mut connection => {}
                         () = wait_for_shutdown(&mut shutdown_signal) => {
                             connection.as_mut().graceful_shutdown();
-                            let _ = connection.await;
+                            let _ = tokio::time::timeout(
+                                shutdown_grace,
+                                connection.as_mut(),
+                            ).await;
+                        }
+                        () = wait_for_connection_idle(
+                            &activity,
+                            idle_timeout,
+                        ) => {
+                            connection.as_mut().graceful_shutdown();
+                            let _ = tokio::time::timeout(
+                                IDLE_CONNECTION_CLOSE_GRACE,
+                                connection.as_mut(),
+                            ).await;
                         }
                     }
                 }));
@@ -299,6 +401,20 @@ pub(super) async fn serve(
     }
 }
 
+fn configure_protocol_limits(
+    builder: &mut auto::Builder<LocalExecutor>,
+    config: &WebIngressConfig,
+) {
+    builder
+        .http1()
+        .timer(TokioTimer::new())
+        .header_read_timeout(config.request_head_timeout());
+    builder.http2().max_concurrent_streams(
+        u32::try_from(config.max_concurrent_requests())
+            .expect("validated Web Ingress concurrency fits HTTP/2 SETTINGS"),
+    );
+}
+
 pub(super) fn assert_server_result(result: std::io::Result<()>) {
     result.unwrap_or_else(|error| panic!("Web Ingress server failed: {error}"));
 }
@@ -311,11 +427,50 @@ async fn wait_for_shutdown(shutdown: &mut tokio::sync::watch::Receiver<bool>) {
     }
 }
 
+async fn wait_for_connection_idle(activity: &ConnectionActivity, timeout: std::time::Duration) {
+    loop {
+        let active = activity.state.active_requests.get();
+        let deadline = if active == 0 {
+            activity.state.idle_since.get() + timeout
+        } else {
+            Instant::now() + timeout
+        };
+        tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+        if activity.state.active_requests.get() == 0
+            && Instant::now().duration_since(activity.state.idle_since.get()) >= timeout
+        {
+            return;
+        }
+    }
+}
+
+async fn acquire_request_permit<'a>(
+    semaphore: &'a Semaphore,
+    cancellation: &CancellationToken,
+) -> Option<tokio::sync::SemaphorePermit<'a>> {
+    if cancellation.is_cancelled() {
+        return None;
+    }
+    match semaphore.try_acquire() {
+        Ok(permit) => Some(permit),
+        Err(tokio::sync::TryAcquireError::NoPermits) => tokio::select! {
+            permit = semaphore.acquire() => Some(
+                permit.expect("the Ingress concurrency semaphore remains open")
+            ),
+            () = cancellation.cancelled() => None,
+        },
+        Err(tokio::sync::TryAcquireError::Closed) => {
+            panic!("the Ingress concurrency semaphore remains open")
+        }
+    }
+}
+
 impl IngressService {
     async fn call(
         self,
         mut request: Request<Incoming>,
     ) -> Result<Response<Full<Bytes>>, Infallible> {
+        let _active_request = self.activity.as_ref().map(ConnectionActivity::begin);
         mark_sensitive_headers(request.headers_mut());
         let request_head_len = canonical_request_head_len(&request);
         let request_id = replace_request_id(request.headers_mut(), &self.next_request_id);
@@ -325,13 +480,21 @@ impl IngressService {
                 r#"{"error":"request_header_fields_too_large"}"#,
             )
         } else {
-            let permit = tokio::select! {
-                permit = self.concurrency.acquire() => Some(
-                    permit.expect("the Ingress concurrency semaphore remains open")
-                ),
-                () = self.cancellation.cancelled() => None,
+            let local_permit = if let Some(local) = &self.local_concurrency {
+                let Some(permit) = acquire_request_permit(local, &self.cancellation).await else {
+                    return Ok(with_transport_headers(
+                        unavailable().into_response(),
+                        request_id,
+                    ));
+                };
+                Some(permit)
+            } else {
+                None
             };
-            if let Some(_permit) = permit {
+            let global_permit =
+                acquire_request_permit(&self.global_concurrency, &self.cancellation).await;
+            if let Some(_global_permit) = global_permit {
+                let _local_permit = local_permit;
                 self.dispatch(request).await
             } else {
                 unavailable()
@@ -349,13 +512,23 @@ impl IngressService {
         if content_length.is_some_and(|length| length > self.config.max_request_body_bytes()) {
             return payload_too_large();
         }
-        let body = tokio::select! {
-            body = collect_bounded_body(
-                body,
-                content_length,
-                self.config.max_request_body_bytes(),
-            ) => body,
-            () = self.cancellation.cancelled() => return unavailable(),
+        let body = if body_is_already_complete(&body) {
+            Ok(Bytes::new())
+        } else {
+            tokio::select! {
+                body = tokio::time::timeout(
+                    self.config.request_body_timeout(),
+                    collect_bounded_body(
+                        body,
+                        content_length,
+                        self.config.max_request_body_bytes(),
+                    ),
+                ) => match body {
+                    Ok(body) => body,
+                    Err(_) => return request_timeout(),
+                },
+                () = self.cancellation.cancelled() => return unavailable(),
+            }
         };
         let body = match body {
             Ok(body) => body,
@@ -487,6 +660,11 @@ fn restore_inbound_request(
 enum BodyReadError {
     TooLarge,
     Invalid,
+}
+
+#[inline]
+fn body_is_already_complete(body: &impl hyper::body::Body) -> bool {
+    body.is_end_stream()
 }
 
 async fn collect_bounded_body(
@@ -784,6 +962,13 @@ fn payload_too_large() -> IngressResponse {
     )
 }
 
+fn request_timeout() -> IngressResponse {
+    IngressResponse::json(
+        StatusCode::REQUEST_TIMEOUT,
+        r#"{"error":"request_timeout"}"#,
+    )
+}
+
 fn method_not_allowed(allowed: &[Method]) -> IngressResponse {
     let mut response = IngressResponse::json(
         StatusCode::METHOD_NOT_ALLOWED,
@@ -817,10 +1002,61 @@ fn invalid_endpoint_response() -> IngressResponse {
 #[cfg(test)]
 mod tests {
     use super::{
-        assert_server_result, canonical_request_head_len, is_static_hop_by_hop_name,
-        request_id_header_value, serialized_uri_len,
+        ConnectionActivity, acquire_request_permit, assert_server_result, body_is_already_complete,
+        canonical_request_head_len, is_static_hop_by_hop_name, request_id_header_value,
+        serialized_uri_len, wait_for_connection_idle,
     };
     use axum::http::{Request, Uri, Version};
+    use bytes::Bytes;
+    use http_body_util::Empty;
+    use lenso_kernel::CancellationToken;
+    use std::time::{Duration, Instant};
+    use tokio::sync::Semaphore;
+
+    #[test]
+    fn an_already_complete_body_uses_the_empty_fast_path() {
+        assert!(body_is_already_complete(&Empty::<Bytes>::new()));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn request_permit_fast_path_respects_capacity_and_prior_cancellation() {
+        let semaphore = Semaphore::new(1);
+        let cancellation = CancellationToken::new();
+        let permit = acquire_request_permit(&semaphore, &cancellation)
+            .await
+            .expect("available request capacity should be acquired immediately");
+        assert_eq!(semaphore.available_permits(), 0);
+        drop(permit);
+
+        cancellation.cancel();
+        assert!(
+            acquire_request_permit(&semaphore, &cancellation)
+                .await
+                .is_none()
+        );
+        assert_eq!(semaphore.available_permits(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn idle_watchdog_starts_at_the_last_request_completion() {
+        let activity = ConnectionActivity::new();
+        let active = activity.begin();
+        let idle_timeout = Duration::from_millis(20);
+        let wait = async {
+            wait_for_connection_idle(&activity, idle_timeout).await;
+            Instant::now()
+        };
+        let finish = async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            drop(active);
+            Instant::now()
+        };
+
+        let (closed_at, finished_at) = tokio::join!(wait, finish);
+        let observed_idle = closed_at.duration_since(finished_at);
+        assert!(observed_idle >= idle_timeout);
+        assert!(observed_idle < idle_timeout + Duration::from_millis(50));
+    }
 
     #[test]
     fn request_id_header_values_cover_the_full_counter_range() {

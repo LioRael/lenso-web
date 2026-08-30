@@ -5,7 +5,7 @@
   "source": {
     "base_repository_commit": "4fa0cf75dcc7d7ece5021bad3f15fef798016a10",
     "benchmark_source": "The repository commit containing this evidence file.",
-    "command": "cargo bench --locked -p lenso-web-ingress --bench web_execution_profile",
+    "command": "cargo bench --locked -p lenso-web-ingress-plugin --bench web_execution_profile",
     "profile": "release",
     "samples_per_throughput_case": 3,
     "requests_per_throughput_sample": 20000,

@@ -1,0 +1,143 @@
+{
+  "schema": "lenso.web-execution-profile.evidence.v1",
+  "measured_at": "2026-08-30",
+  "comparison_boundary": "Independent client and server processes on loopback using the same zero-byte echo handler. Bare Axum has no transport policy; axum_transport adds the same request ID, sensitive header, body/head, response header, and concurrency policy class; bridge adds a bounded single-owner dispatch; lenso includes immutable Host admission in the resolved Plan, bounded live connections and HTTP/2 streams, header/body/idle deadlines, Web Ingress, Kernel invocation, and the native Endpoint Module.",
+  "source": {
+    "base_repository_commit": "d4943b1ffd30c90d2621ef4b9884adbb1e206bbc",
+    "benchmark_source": "Delivery branch based on base_repository_commit with the bounded Ingress, low-overhead hot-path, and Host admission changes described by advisor-plans/001-bound-ingress-resources.md and advisor-plans/002-align-http-admission.md.",
+    "command": "/Users/leosouthey/Projects/framework/.lenso-tools/bin/lenso-cargo bench --locked -p lenso-web-ingress-plugin --bench web_execution_profile",
+    "profile": "release",
+    "samples_per_throughput_case": 3,
+    "requests_per_throughput_sample": 20000,
+    "unloaded_latency_samples": 512
+  },
+  "host": {
+    "os": "Darwin 27 arm64",
+    "cpu": "Apple M2 Pro",
+    "logical_cpus": 10,
+    "memory_bytes": 17179869184,
+    "rustc": "1.99.0-nightly (375b1431b 2026-07-10)"
+  },
+  "measurement_notes": {
+    "latency": "p50 and p99 are sequential unloaded keep-alive request latency, not coordinated-omission-safe loaded latency.",
+    "cpu_and_memory": "CPU percent and RSS KiB are peak samples from ps during a separate workload with the same request count, so sampling does not alter the reported throughput samples.",
+    "saturation": "The one-second client deadline is long enough for sixteen waves at the shared 32-request admission ceiling; HTTP rejection or client timeout therefore indicates a scheduling or admission failure rather than the expected bounded wait.",
+    "repeatability": "The immediately preceding full run of the same optimized binary measured policy Axum at 100304 requests/s and Lenso at 93556 requests/s with 8 connections, or 93.27%. The recorded final run measured 92.61%; both restore the pre-change ratio range without weakening limits.",
+    "scope": "One host sample is decision evidence, not a product performance guarantee."
+  },
+  "throughput": [
+    {
+      "server": "axum",
+      "connections": 1,
+      "median_requests_per_second": 35956,
+      "samples_requests_per_second": [35210, 35956, 36408],
+      "unloaded_p50_microseconds": 24,
+      "unloaded_p99_microseconds": 58,
+      "server_peak_cpu_percent": 43.1,
+      "server_peak_rss_kib": 3568
+    },
+    {
+      "server": "axum",
+      "connections": 8,
+      "median_requests_per_second": 111199,
+      "samples_requests_per_second": [111118, 111199, 112810],
+      "unloaded_p50_microseconds": 21,
+      "unloaded_p99_microseconds": 49,
+      "server_peak_cpu_percent": 91.3,
+      "server_peak_rss_kib": 3280
+    },
+    {
+      "server": "axum_transport",
+      "connections": 1,
+      "median_requests_per_second": 35588,
+      "samples_requests_per_second": [33577, 35588, 37490],
+      "unloaded_p50_microseconds": 28,
+      "unloaded_p99_microseconds": 63,
+      "server_peak_cpu_percent": 50.4,
+      "server_peak_rss_kib": 3152
+    },
+    {
+      "server": "axum_transport",
+      "connections": 8,
+      "median_requests_per_second": 99079,
+      "samples_requests_per_second": [89168, 99079, 99592],
+      "unloaded_p50_microseconds": 27,
+      "unloaded_p99_microseconds": 67,
+      "server_peak_cpu_percent": 91.9,
+      "server_peak_rss_kib": 3520
+    },
+    {
+      "server": "bridge",
+      "connections": 1,
+      "median_requests_per_second": 22251,
+      "samples_requests_per_second": [21975, 22251, 22299],
+      "unloaded_p50_microseconds": 42,
+      "unloaded_p99_microseconds": 88,
+      "server_peak_cpu_percent": 39.6,
+      "server_peak_rss_kib": 3248
+    },
+    {
+      "server": "bridge",
+      "connections": 8,
+      "median_requests_per_second": 89984,
+      "samples_requests_per_second": [89044, 89984, 93624],
+      "unloaded_p50_microseconds": 41,
+      "unloaded_p99_microseconds": 88,
+      "server_peak_cpu_percent": 91.9,
+      "server_peak_rss_kib": 3632
+    },
+    {
+      "server": "lenso",
+      "connections": 1,
+      "median_requests_per_second": 33945,
+      "samples_requests_per_second": [32729, 33945, 37637],
+      "unloaded_p50_microseconds": 27,
+      "unloaded_p99_microseconds": 58,
+      "server_peak_cpu_percent": 54.1,
+      "server_peak_rss_kib": 3808
+    },
+    {
+      "server": "lenso",
+      "connections": 8,
+      "median_requests_per_second": 91758,
+      "samples_requests_per_second": [87093, 91758, 95035],
+      "unloaded_p50_microseconds": 27,
+      "unloaded_p99_microseconds": 70,
+      "server_peak_cpu_percent": 94.5,
+      "server_peak_rss_kib": 4160
+    }
+  ],
+  "saturation": {
+    "concurrency_limits": {"axum": "unbounded", "axum_transport": 32, "bridge": 32, "lenso": 32},
+    "requests": 512,
+    "handler_delay_milliseconds": 25,
+    "client_deadline_milliseconds": 1000,
+    "results": [
+      {"server": "axum", "success": 512, "http_rejected": {}, "io_error": 0, "client_timeout": 0, "elapsed_milliseconds": 45},
+      {"server": "axum_transport", "success": 512, "http_rejected": {}, "io_error": 0, "client_timeout": 0, "elapsed_milliseconds": 450},
+      {"server": "bridge", "success": 37, "http_rejected": {}, "io_error": 0, "client_timeout": 475, "elapsed_milliseconds": 1014},
+      {"server": "lenso", "success": 512, "http_rejected": {}, "io_error": 0, "client_timeout": 0, "elapsed_milliseconds": 448}
+    ]
+  },
+  "two_lane_distribution": [
+    {"connections": 1, "requests": 20000, "requests_per_second": 32479, "p50_microseconds": 27, "p99_microseconds": 69, "lane_counts": {"0": 20000, "1": 0}},
+    {"connections": 2, "requests": 20000, "requests_per_second": 49499, "p50_microseconds": 37, "p99_microseconds": 78, "lane_counts": {"0": 10000, "1": 10000}},
+    {"connections": 8, "requests": 20000, "requests_per_second": 110157, "p50_microseconds": 67, "p99_microseconds": 137, "lane_counts": {"0": 10000, "1": 10000}}
+  ],
+  "derived_comparisons": {
+    "lenso_vs_bare_axum_throughput_percent": {"1_connection": 94.41, "8_connections": 82.52},
+    "lenso_vs_policy_axum_throughput_percent": {"1_connection": 95.38, "8_connections": 92.61},
+    "two_lane_vs_single_lane_throughput_percent_at_8_connections": 120.05
+  },
+  "optimization_comparison": {
+    "pre_optimization_same_day": {"policy_axum_8_connection_requests_per_second": 99758, "lenso_8_connection_requests_per_second": 84719, "lenso_vs_policy_axum_percent": 84.92},
+    "recorded_final": {"policy_axum_8_connection_requests_per_second": 99079, "lenso_8_connection_requests_per_second": 91758, "lenso_vs_policy_axum_percent": 92.61},
+    "ratio_improvement_percentage_points": 7.69
+  },
+  "decision": {
+    "add_work_stealing_web_profile": false,
+    "change_portable_kernel": false,
+    "finding": "The remaining material imbalance is HTTP/1.1 keep-alive connection affinity in the Ingress coordinator: one hot connection uses one lane, while two or more connections distribute evenly. Bounded Host admission now completes 512 delayed requests without rejection or timeout.",
+    "next_boundary": "If production traces show a small number of hot or multiplexed connections, investigate request/stream-aware Ingress routing, lane health, and load selection before changing Kernel scheduling. Reconsider a separate Web execution profile only after repeated feature-equivalent workloads remain materially limited after that boundary is addressed."
+  }
+}

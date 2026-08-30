@@ -10,7 +10,7 @@ use std::{
 use futures::{StreamExt as _, stream::FuturesUnordered};
 use tokio::{
     net::TcpListener,
-    sync::{Semaphore, mpsc, watch},
+    sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch},
 };
 
 use crate::{WebIngressConfig, plugin_failure};
@@ -75,7 +75,7 @@ impl std::error::Error for WebIngressReplicaMismatch {}
 #[derive(Debug)]
 struct ReplicaSlot {
     manifest: Option<WebIngressReplicaManifest>,
-    connections: Option<mpsc::Sender<std::net::TcpStream>>,
+    connections: Option<mpsc::Sender<ReplicaConnection>>,
 }
 
 #[derive(Debug)]
@@ -104,7 +104,10 @@ struct ListenerCoordinatorInner {
     next_slot: AtomicUsize,
     next_connection: AtomicUsize,
     next_request_id: Arc<AtomicU64>,
-    concurrency: Arc<Semaphore>,
+    request_concurrency: Arc<Semaphore>,
+    connection_concurrency: Arc<Semaphore>,
+    local_request_limit: usize,
+    acceptor_failure: watch::Sender<Option<String>>,
     ready: watch::Sender<bool>,
     _shutdown: watch::Sender<bool>,
 }
@@ -142,8 +145,13 @@ impl WebIngressListenerCoordinator {
         })?;
         let (ready, ready_signal) = watch::channel(false);
         let (shutdown, shutdown_signal) = watch::channel(false);
+        let (acceptor_failure, _) = watch::channel(None);
+        let local_request_limit = config.max_concurrent_requests().div_ceil(replica_count);
         let inner = Arc::new(ListenerCoordinatorInner {
-            concurrency: Arc::new(Semaphore::new(config.max_concurrent_requests())),
+            request_concurrency: Arc::new(Semaphore::new(config.max_concurrent_requests())),
+            connection_concurrency: Arc::new(Semaphore::new(config.max_connections())),
+            local_request_limit,
+            acceptor_failure,
             config,
             local_address: address,
             state: Mutex::new(CoordinatorState {
@@ -227,7 +235,8 @@ impl WebIngressReplica {
             .coordinator
             .inner
             .config
-            .max_concurrent_requests()
+            .max_connections()
+            .div_ceil(state_slot_count(&self.coordinator.inner.state))
             .max(1);
         let (connections, receiver) = mpsc::channel(queue_capacity);
         let mut state = self
@@ -255,17 +264,59 @@ impl WebIngressReplica {
         }
         Ok(ReplicaConnectionSource {
             receiver,
-            concurrency: Arc::clone(&self.coordinator.inner.concurrency),
+            global_request_concurrency: Arc::clone(&self.coordinator.inner.request_concurrency),
+            local_request_concurrency: Arc::new(Semaphore::new(
+                self.coordinator.inner.local_request_limit,
+            )),
+            global_connection_concurrency: Arc::clone(
+                &self.coordinator.inner.connection_concurrency,
+            ),
+            acceptor_failure: self.coordinator.inner.acceptor_failure.subscribe(),
             next_request_id: Arc::clone(&self.coordinator.inner.next_request_id),
         })
     }
 }
 
 #[derive(Debug)]
+pub(crate) struct ReplicaConnection {
+    pub(crate) stream: std::net::TcpStream,
+    pub(crate) permit: OwnedSemaphorePermit,
+}
+
+#[derive(Debug)]
 pub(crate) struct ReplicaConnectionSource {
-    pub(crate) receiver: mpsc::Receiver<std::net::TcpStream>,
-    pub(crate) concurrency: Arc<Semaphore>,
+    pub(crate) receiver: mpsc::Receiver<ReplicaConnection>,
+    pub(crate) global_request_concurrency: Arc<Semaphore>,
+    pub(crate) local_request_concurrency: Arc<Semaphore>,
+    pub(crate) global_connection_concurrency: Arc<Semaphore>,
+    acceptor_failure: watch::Receiver<Option<String>>,
     pub(crate) next_request_id: Arc<AtomicU64>,
+}
+
+impl ReplicaConnectionSource {
+    pub(crate) async fn receive(&mut self) -> std::io::Result<Option<ReplicaConnection>> {
+        loop {
+            if let Some(detail) = self.acceptor_failure.borrow_and_update().clone() {
+                return Err(std::io::Error::other(detail));
+            }
+            tokio::select! {
+                stream = self.receiver.recv() => return Ok(stream),
+                changed = self.acceptor_failure.changed() => {
+                    if changed.is_err() {
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn state_slot_count(state: &Mutex<CoordinatorState>) -> usize {
+    state
+        .lock()
+        .expect("Web Ingress coordinator state is not poisoned")
+        .slots
+        .len()
 }
 
 fn spawn_acceptor(
@@ -277,11 +328,18 @@ fn spawn_acceptor(
     std::thread::Builder::new()
         .name("lenso-web-listener".to_owned())
         .spawn(move || {
-            let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+            let runtime = match tokio::runtime::Builder::new_current_thread()
                 .enable_io()
                 .build()
-            else {
-                return;
+            {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    report_acceptor_failure(
+                        &coordinator,
+                        format!("Web Ingress acceptor runtime failed: {error}"),
+                    );
+                    return;
+                }
             };
             runtime.block_on(async move {
                 while !*ready.borrow_and_update() {
@@ -290,14 +348,39 @@ fn spawn_acceptor(
                         changed = shutdown.changed() => if changed.is_err() || *shutdown.borrow() { return },
                     }
                 }
-                let Ok(listener) = TcpListener::from_std(listener) else {
-                    return;
+                let listener = match TcpListener::from_std(listener) {
+                    Ok(listener) => listener,
+                    Err(error) => {
+                        report_acceptor_failure(
+                            &coordinator,
+                            format!("Web Ingress acceptor listener transfer failed: {error}"),
+                        );
+                        return;
+                    }
                 };
                 loop {
                     tokio::select! {
                         accepted = listener.accept() => {
-                            let Ok((stream, _)) = accepted else { return };
-                            let Ok(stream) = stream.into_std() else { continue };
+                            let (stream, _) = match accepted {
+                                Ok(accepted) => accepted,
+                                Err(error) => {
+                                    report_acceptor_failure(
+                                        &coordinator,
+                                        format!("Web Ingress accept failed: {error}"),
+                                    );
+                                    return;
+                                }
+                            };
+                            let stream = match stream.into_std() {
+                                Ok(stream) => stream,
+                                Err(error) => {
+                                    report_acceptor_failure(
+                                        &coordinator,
+                                        format!("Web Ingress accepted socket transfer failed: {error}"),
+                                    );
+                                    return;
+                                }
+                            };
                             distribute_connection(&coordinator, stream).await;
                         }
                         changed = shutdown.changed() => if changed.is_err() || *shutdown.borrow() { return },
@@ -309,13 +392,23 @@ fn spawn_acceptor(
         .map_err(|error| plugin_failure(format!("Web Ingress acceptor could not start: {error}")))
 }
 
+fn report_acceptor_failure(coordinator: &Weak<ListenerCoordinatorInner>, detail: String) {
+    if let Some(coordinator) = coordinator.upgrade() {
+        coordinator.acceptor_failure.send_replace(Some(detail));
+    }
+}
+
 async fn distribute_connection(
     coordinator: &Weak<ListenerCoordinatorInner>,
-    mut stream: std::net::TcpStream,
+    stream: std::net::TcpStream,
 ) {
     let Some(coordinator) = coordinator.upgrade() else {
         return;
     };
+    let Ok(permit) = Arc::clone(&coordinator.connection_concurrency).try_acquire_owned() else {
+        return;
+    };
+    let mut connection = ReplicaConnection { stream, permit };
     let waiting_senders = {
         let state = coordinator
             .state
@@ -329,13 +422,13 @@ async fn distribute_connection(
             let Some(sender) = &state.slots[slot].connections else {
                 continue;
             };
-            match sender.try_send(stream) {
+            match sender.try_send(connection) {
                 Ok(()) => return,
                 Err(mpsc::error::TrySendError::Full(returned)) => {
-                    stream = returned;
+                    connection = returned;
                     waiting_senders.push(sender.clone());
                 }
-                Err(mpsc::error::TrySendError::Closed(returned)) => stream = returned,
+                Err(mpsc::error::TrySendError::Closed(returned)) => connection = returned,
             }
         }
         waiting_senders
@@ -347,7 +440,7 @@ async fn distribute_connection(
     tokio::pin!(reservations);
     while let Some(result) = reservations.next().await {
         if let Ok(permit) = result {
-            permit.send(stream);
+            permit.send(connection);
             return;
         }
     }
@@ -359,7 +452,7 @@ mod tests {
 
     use super::{
         WebIngressListenerCoordinator, WebIngressRoute, WebIngressRouteManifest,
-        distribute_connection,
+        distribute_connection, report_acceptor_failure,
     };
     use crate::WebIngressConfig;
 
@@ -445,9 +538,11 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn coordinator_backpressures_when_every_replica_queue_is_full() {
+    async fn replicas_share_one_hard_live_connection_budget() {
         let config = WebIngressConfig::default()
             .with_max_concurrent_requests(1)
+            .unwrap()
+            .with_connection_limits(2, Duration::from_secs(60))
             .unwrap();
         let coordinator = WebIngressListenerCoordinator::bind(config, 2)
             .await
@@ -473,18 +568,73 @@ mod tests {
         distribute_connection(&weak, first_stream).await;
         distribute_connection(&weak, second_stream).await;
 
-        let (backpressured_stream, _backpressured_peer) = tcp_stream();
+        let (rejected_stream, _rejected_peer) = tcp_stream();
         let task = tokio::spawn(async move {
-            distribute_connection(&weak, backpressured_stream).await;
+            distribute_connection(&weak, rejected_stream).await;
         });
         tokio::task::yield_now().await;
-        assert!(!task.is_finished());
+        assert!(task.is_finished());
+        task.await.unwrap();
 
-        first.receiver.recv().await.unwrap();
-        tokio::time::timeout(Duration::from_secs(1), task)
-            .await
-            .expect("connection should resume when one queue has capacity")
-            .unwrap();
+        let admitted = first.receiver.recv().await.unwrap();
+        drop(admitted);
+        let (next_stream, _next_peer) = tcp_stream();
+        distribute_connection(&Arc::downgrade(&coordinator.inner), next_stream).await;
         assert!(first.receiver.try_recv().is_ok());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn replicas_have_global_and_fair_lane_local_request_bounds() {
+        let config = WebIngressConfig::default()
+            .with_max_concurrent_requests(5)
+            .unwrap();
+        let coordinator = WebIngressListenerCoordinator::bind(config, 2)
+            .await
+            .unwrap();
+        let manifest = WebIngressRouteManifest::new(vec![WebIngressRoute::new(
+            "GET",
+            "/orders",
+            "orders.list",
+        )]);
+        let first = coordinator
+            .allocate_replica()
+            .unwrap()
+            .register(manifest.clone(), Vec::new())
+            .unwrap();
+        let second = coordinator
+            .allocate_replica()
+            .unwrap()
+            .register(manifest, Vec::new())
+            .unwrap();
+
+        assert_eq!(first.global_request_concurrency.available_permits(), 5);
+        assert_eq!(first.local_request_concurrency.available_permits(), 3);
+        assert_eq!(second.local_request_concurrency.available_permits(), 3);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn acceptor_failures_wake_registered_replicas() {
+        let coordinator = WebIngressListenerCoordinator::bind(WebIngressConfig::default(), 1)
+            .await
+            .unwrap();
+        let mut source = coordinator
+            .allocate_replica()
+            .unwrap()
+            .register(
+                WebIngressRouteManifest::new(vec![WebIngressRoute::new(
+                    "GET",
+                    "/orders",
+                    "orders.list",
+                )]),
+                Vec::new(),
+            )
+            .unwrap();
+        report_acceptor_failure(
+            &Arc::downgrade(&coordinator.inner),
+            "fixture accept failure".to_owned(),
+        );
+
+        let error = source.receive().await.unwrap_err();
+        assert!(error.to_string().contains("fixture accept failure"));
     }
 }

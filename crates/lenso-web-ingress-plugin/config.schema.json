@@ -14,6 +14,21 @@
     "max_concurrent_requests": {
       "type": "integer"
     },
+    "max_connections": {
+      "type": "integer"
+    },
+    "request_head_timeout_millis": {
+      "type": "integer"
+    },
+    "request_body_timeout_millis": {
+      "type": "integer"
+    },
+    "connection_idle_timeout_millis": {
+      "type": "integer"
+    },
+    "shutdown_grace_timeout_millis": {
+      "type": "integer"
+    },
     "request_timeout_millis": {
       "type": "integer"
     }
