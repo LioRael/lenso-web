@@ -2,7 +2,6 @@
 set -euo pipefail
 
 repo_root=$(git rev-parse --show-toplevel)
-suite_auth_root=$(cd "$repo_root/../../lenso-auth-plugin/feat-support-attachment-auth-sdk-alignment" && pwd -P)
 while IFS=: read -r manifest _ assignment; do
   dependency_path=${assignment#*\"}
   dependency_path=${dependency_path%\"}
@@ -17,8 +16,6 @@ while IFS=: read -r manifest _ assignment; do
   fi
   case "$resolved_path" in
     "$repo_root" | "$repo_root"/*) ;;
-    "$suite_auth_root/crates/lenso-auth-sdk" | \
-    "$suite_auth_root/crates/lenso-capability-auth") ;;
     *)
       echo "$manifest: cross-repository path dependency $dependency_path" >&2
       echo "cross-repository or absolute path dependencies are not allowed" >&2
