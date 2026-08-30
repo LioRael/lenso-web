@@ -1,6 +1,9 @@
 use std::time::Duration;
 
 use axum::{Router, body::Bytes, http::StatusCode, routing::get, routing::post};
+use http_body_util::Full;
+use hyper::{Request, Response, body::Incoming, service::service_fn};
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use lenso_app_plan::{
     AppComposition, CapabilityBinding, CapabilityEndpointPlan, CapabilityRequirementPlan,
     PluginInstancePlan, ResolvedAppPlan,
@@ -9,7 +12,7 @@ use lenso_capability_http_client::{
     CAPABILITY_ID, Client, DESCRIPTOR_VERSION, SEND_OPERATION, SendError, SendRequest,
     SendRequestHeadersItem,
 };
-use lenso_http_egress_plugin::{HttpEgressConfig, PACKAGE_ID};
+use lenso_http_egress_plugin::{HttpEgressConfig, HttpVersionPolicy, PACKAGE_ID};
 use lenso_kernel::{Kernel, RuntimeFailure, ShutdownOutcome};
 use lenso_native_adapter::{
     NativePluginFactory, NativePluginFactoryContext, NativePluginInstance, NativePluginRegistry,
@@ -182,6 +185,38 @@ async fn total_timeout_is_owned_by_the_egress_instance() {
         .await;
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn composed_client_uses_http2_prior_knowledge_when_required() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (address, upstream) = spawn_http2_upstream().await;
+            let origin = format!("http://{address}");
+            let config = HttpEgressConfig::new([&origin])
+                .unwrap()
+                .with_http_version(HttpVersionPolicy::Http2PriorKnowledge);
+            let app = start(config).await;
+
+            let response = app
+                .invoke::<Client>(
+                    "caller",
+                    SEND_OPERATION,
+                    request("GET", &format!("{origin}/version"), &[], b""),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(response.status, 200);
+            assert_eq!(response.body.as_slice(), b"HTTP/2.0");
+
+            assert_eq!(
+                app.shutdown(Duration::from_secs(1)).await,
+                ShutdownOutcome::Clean
+            );
+            upstream.abort();
+        })
+        .await;
+}
+
 async fn start(config: HttpEgressConfig) -> lenso_kernel::NativeApp {
     Kernel::start_native(
         plan(&config),
@@ -276,6 +311,30 @@ async fn spawn_upstream() -> (std::net::SocketAddr, JoinHandle<()>) {
     let address = listener.local_addr().unwrap();
     let task = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
+    });
+    (address, task)
+}
+
+async fn spawn_http2_upstream() -> (std::net::SocketAddr, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::task::spawn_local(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            tokio::task::spawn_local(async move {
+                let service = service_fn(|request: Request<Incoming>| async move {
+                    Ok::<_, std::convert::Infallible>(Response::new(Full::new(Bytes::from(
+                        format!("{:?}", request.version()),
+                    ))))
+                });
+                hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+                    .serve_connection(TokioIo::new(stream), service)
+                    .await
+                    .unwrap();
+            });
+        }
     });
     (address, task)
 }

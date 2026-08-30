@@ -34,7 +34,7 @@ lenso-plugin-authoring = { version = "0.1.1", git = "https://github.com/LioRael/
 lenso-runner = { version = "0.2.0", git = "https://github.com/LioRael/lenso-runtime-rust", rev = "b763a63adc20f1ccc9955e784c0d04c21489126b" }
 proc-macro2 = "1.0"
 quote = "1.0"
-reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["http2", "rustls"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_urlencoded = "0.7"

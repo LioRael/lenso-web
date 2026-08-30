@@ -9,6 +9,10 @@
       "maxItems": 256,
       "items": { "type": "string" }
     },
+    "http_version": {
+      "type": "string",
+      "enum": ["auto", "http1_only", "http2_prior_knowledge"]
+    },
     "max_request_body_bytes": { "type": "integer" },
     "max_request_head_bytes": { "type": "integer" },
     "max_response_body_bytes": { "type": "integer" },

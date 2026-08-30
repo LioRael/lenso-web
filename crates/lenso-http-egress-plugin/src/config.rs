@@ -10,11 +10,26 @@ const MAX_TIMEOUT_MILLIS: u64 = 300_000;
 const MAX_ALLOWED_ORIGINS: usize = 256;
 const MAX_URL_BYTES: usize = 4_096;
 
+/// Outbound HTTP protocol selection for one Egress Plugin Instance.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HttpVersionPolicy {
+    /// Negotiate HTTP/2 over TLS through ALPN and otherwise retain HTTP/1.1 compatibility.
+    #[default]
+    Auto,
+    /// Require HTTP/1.1 for every allowed origin.
+    Http1Only,
+    /// Require HTTP/2, including cleartext prior knowledge for `http` origins.
+    Http2PriorKnowledge,
+}
+
 /// Immutable outbound HTTP authority and resource limits for one Plugin Instance.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct HttpEgressConfig {
     allowed_origins: Vec<String>,
+    #[serde(default)]
+    http_version: HttpVersionPolicy,
     #[serde(default = "default_max_request_body_bytes")]
     max_request_body_bytes: usize,
     #[serde(default = "default_max_request_head_bytes")]
@@ -38,6 +53,7 @@ impl HttpEgressConfig {
     ) -> Result<Self, String> {
         let config = Self {
             allowed_origins: allowed_origins.into_iter().map(Into::into).collect(),
+            http_version: HttpVersionPolicy::default(),
             max_request_body_bytes: default_max_request_body_bytes(),
             max_request_head_bytes: default_max_request_head_bytes(),
             max_response_body_bytes: default_max_response_body_bytes(),
@@ -48,6 +64,13 @@ impl HttpEgressConfig {
         };
         config.validate()?;
         Ok(config)
+    }
+
+    /// Replaces automatic protocol negotiation with one immutable protocol policy.
+    #[must_use]
+    pub fn with_http_version(mut self, policy: HttpVersionPolicy) -> Self {
+        self.http_version = policy;
+        self
     }
 
     /// Replaces request and response body/head limits.
@@ -113,6 +136,10 @@ impl HttpEgressConfig {
 
     pub(crate) const fn max_request_body_bytes(&self) -> usize {
         self.max_request_body_bytes
+    }
+
+    pub(crate) const fn http_version(&self) -> HttpVersionPolicy {
+        self.http_version
     }
 
     pub(crate) const fn max_request_head_bytes(&self) -> usize {
@@ -212,5 +239,26 @@ mod tests {
         );
         assert!(HttpEgressConfig::new(["https://api.example.test/v1"]).is_err());
         assert!(HttpEgressConfig::new(["file:///tmp/socket"]).is_err());
+    }
+
+    #[test]
+    fn http_version_policy_round_trips_through_plan_configuration() {
+        let config = HttpEgressConfig::new(["http://127.0.0.1:8080"])
+            .unwrap()
+            .with_http_version(HttpVersionPolicy::Http2PriorKnowledge);
+        let encoded = serde_json::to_string(&config).unwrap();
+        assert_eq!(
+            serde_json::from_str::<HttpEgressConfig>(&encoded).unwrap(),
+            config
+        );
+    }
+
+    #[test]
+    fn existing_plan_configuration_defaults_to_automatic_negotiation() {
+        let config = serde_json::from_str::<HttpEgressConfig>(
+            r#"{"allowed_origins":["https://api.example.test"]}"#,
+        )
+        .unwrap();
+        assert_eq!(config.http_version(), HttpVersionPolicy::Auto);
     }
 }

@@ -357,7 +357,20 @@ rejects origin changes, user info, URL fragments, authority/hop-by-hop request
 headers, and oversized transfer evidence. It does not follow redirects, use
 system proxies, set a Referer, store cookies, or retry automatically. Total and
 connect timeouts plus concurrency and head/body limits are owned by each Egress
-Instance.
+Instance. Egress negotiates HTTP/2 over TLS by default while retaining HTTP/1.1
+compatibility. An Instance may instead require HTTP/1.1 or HTTP/2 prior
+knowledge, including cleartext h2c for trusted internal origins:
+
+```json
+{
+  "allowed_origins": ["http://inventory.internal:8080"],
+  "http_version": "http2_prior_knowledge"
+}
+```
+
+HTTP/3 is not currently shipped: Reqwest 0.13 exposes its HTTP/3 client only
+behind the upstream `reqwest_unstable` configuration, while Ingress still needs
+a Host-owned TLS credential source and QUIC/UDP listener lifecycle.
 
 ## Verify
 
