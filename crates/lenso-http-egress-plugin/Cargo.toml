@@ -1,6 +1,6 @@
 [package]
 name = "lenso-http-egress-plugin"
-version = "0.2.2"
+version = "0.2.3"
 description = "Policy-bounded linked Rust HTTP Egress Plugin for Lenso backends."
 edition.workspace = true
 license.workspace = true
