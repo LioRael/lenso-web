@@ -61,6 +61,11 @@ Customized configuration uses
   "max_request_body_bytes": 1048576,
   "max_request_head_bytes": 16384,
   "max_concurrent_requests": 128,
+  "max_connections": 1024,
+  "request_head_timeout_millis": 10000,
+  "request_body_timeout_millis": 30000,
+  "connection_idle_timeout_millis": 60000,
+  "shutdown_grace_timeout_millis": 30000,
   "request_timeout_millis": 30000
 }
 ```
@@ -68,6 +73,41 @@ Customized configuration uses
 An existing composition with empty Ingress configuration continues to receive
 these defaults without a schema. Only customized Plan configuration needs the
 schema.
+
+`max_connections` is a hard listener-group budget. The idle deadline is
+suspended while any parsed request is active and starts at the final request's
+completion, so it limits keep-alive connections without imposing an absolute
+connection lifetime. `request_body_timeout_millis` is a total body-read
+deadline. `request_head_timeout_millis` configures Hyper's
+HTTP/1 header deadline; an HTTP/2 connection with no active parsed stream is
+still bounded by the connection idle deadline. HTTP/2 advertises
+`max_concurrent_requests` as its per-connection stream ceiling; a peer that
+opens excess simultaneous streams receives `REFUSED_STREAM` and may retry,
+while the same semaphore remains the global execution ceiling across
+connections. On App shutdown, admitted connections receive
+`shutdown_grace_timeout_millis` to drain after Hyper begins graceful shutdown;
+the default matches the Endpoint request deadline, after which the socket and
+its live-connection permit are released.
+
+Ingress admission and Kernel Endpoint admission are separate resolved-Plan
+boundaries. A Host should explicitly apply the Ingress execution ceiling to
+every `lenso.http.endpoint@1` binding it creates; the helper returns the
+copyable queue/concurrency pair without moving policy into the Capability
+Descriptor:
+
+```rust,ignore
+let (queue_capacity, max_concurrency) = ingress_config.endpoint_admission_limits();
+let binding = HostBinding::new(
+    PluginInstanceId::new("lenso.web-ingress", "default"),
+    CAPABILITY_ID,
+    "http-endpoints",
+)
+.with_admission(RequestAdmissionPlan::new(queue_capacity, max_concurrency));
+```
+
+A Host may deliberately choose a stricter Endpoint binding. Omitting the
+override inherits the generic source-first provider default of one execution
+slot and no queue, which is usually inappropriate for an HTTP provider.
 
 Route providers are resolved through immutable `many` bindings. They describe
 their method/path table during activation, before the App Ready Gate opens;
@@ -339,8 +379,11 @@ Hosts that replicate one App across Runner lanes can bind once and create one
 Ingress factory per lane through `WebIngressListenerCoordinator`. The
 coordinator opens the Ready Gate only after every replica publishes the same
 canonical route manifest and ordered middleware identity sequence, distributes
-accepted sockets round-robin, and keeps the concurrency semaphore global to the
-listener group. Every identity must include its immutable configuration:
+accepted sockets round-robin, keeps connection and request budgets global to
+the listener group, and gives each lane a fair local request bound as a second
+containment boundary. Acceptor failures are propagated to every lane instead
+of silently stopping the listener. Every identity must include its immutable
+configuration:
 
 ```rust,no_run
 let coordinator = WebIngressListenerCoordinator::bind(config, lane_count).await?;

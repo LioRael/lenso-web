@@ -66,7 +66,7 @@ const BENCHMARK_MAX_REQUEST_HEAD_BYTES: usize = 32 * 1024;
 const BENCHMARK_MAX_CONCURRENT_REQUESTS: usize = 32;
 const SATURATION_REQUESTS: usize = 512;
 const SATURATION_HANDLER_DELAY: Duration = Duration::from_millis(25);
-const SATURATION_CLIENT_DEADLINE: Duration = Duration::from_millis(250);
+const SATURATION_CLIENT_DEADLINE: Duration = Duration::from_secs(1);
 const SATURATION_PATH: &str = "/bench/saturation";
 const LANE_HEADER: HeaderName = HeaderName::from_static("x-benchmark-lane");
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
@@ -1053,6 +1053,7 @@ async fn start_lenso(
 }
 
 fn project(config: &WebIngressConfig) -> ResolvedAppPlan {
+    let endpoint_admission = config.endpoint_admission_limits();
     let endpoint = PluginInstancePlan::new("benchmark-endpoint", FIXTURE_PACKAGE_ID)
         .with_capability(CapabilityEndpointPlan::new(
             CAPABILITY_ID,
@@ -1067,12 +1068,15 @@ fn project(config: &WebIngressConfig) -> ResolvedAppPlan {
         ));
     AppComposition::new(
         vec![endpoint, ingress],
-        vec![CapabilityBinding::new(
-            "web-ingress",
-            CAPABILITY_ID,
-            DESCRIPTOR_VERSION,
-            "benchmark-endpoint",
-        )],
+        vec![
+            CapabilityBinding::new(
+                "web-ingress",
+                CAPABILITY_ID,
+                DESCRIPTOR_VERSION,
+                "benchmark-endpoint",
+            )
+            .with_limits(endpoint_admission.0, endpoint_admission.1),
+        ],
     )
     .resolve()
     .unwrap()
