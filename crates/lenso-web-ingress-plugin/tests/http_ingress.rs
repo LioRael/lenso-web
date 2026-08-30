@@ -33,7 +33,7 @@ use lenso_native_adapter::{
 };
 use lenso_runner::TokioDriver;
 use lenso_web_ingress_plugin::{
-    PACKAGE_ID, PACKAGE_VERSION, WebIngressConfig, WebIngressFactory,
+    PACKAGE_ID, PACKAGE_VERSION, SessionCookieConfig, WebIngressConfig, WebIngressFactory,
     WebIngressListenerCoordinator, WebIngressMiddleware, WebIngressMiddlewareOutcome,
     WebIngressRequest, WebIngressResponse,
 };
@@ -494,6 +494,176 @@ async fn routes_bound_backend_plugins_and_preserves_http_evidence() {
                 "not_found",
             );
             app.shutdown(Duration::from_secs(1)).await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[allow(clippy::too_many_lines)]
+async fn session_cookie_auth_enforces_csrf_on_the_real_ingress_path() {
+    LocalSet::new()
+        .run_until(async {
+            let endpoint = FixtureEndpointFactory::new(
+                ORDERS_PACKAGE_ID,
+                [
+                    ("orders.read", "GET", "/orders/{order_id}"),
+                    ("orders.create", "POST", "/orders"),
+                ],
+            );
+            let config = WebIngressConfig::default()
+                .with_session_cookie(
+                    SessionCookieConfig::new(
+                        "__Host-lenso-session",
+                        "__Host-lenso-csrf",
+                        "x-csrf-token",
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            let ingress = WebIngressFactory::default();
+            let app = start(
+                project_with_config(
+                    &[ProviderPlan::new("orders-http", ORDERS_PACKAGE_ID)],
+                    &config,
+                ),
+                &ingress,
+                [endpoint.clone()],
+            )
+            .await
+            .expect("session Cookie configuration should start");
+            let address = ingress.local_address().unwrap();
+
+            assert_error(
+                &request(
+                    address,
+                    "POST",
+                    "/orders",
+                    &[(
+                        "Cookie",
+                        "__Host-lenso-session=session-token; __Host-lenso-csrf=csrf-token",
+                    )],
+                    "",
+                )
+                .await,
+                403,
+                "csrf_rejected",
+            );
+            assert_error(
+                &request(
+                    address,
+                    "POST",
+                    "/orders",
+                    &[
+                        (
+                            "Cookie",
+                            "__Host-lenso-session=session-token; __Host-lenso-csrf=csrf-token",
+                        ),
+                        ("X-Csrf-Token", "wrong-token"),
+                    ],
+                    "",
+                )
+                .await,
+                403,
+                "csrf_rejected",
+            );
+            assert_error(
+                &request(
+                    address,
+                    "POST",
+                    "/orders",
+                    &[
+                        ("Authorization", "Bearer bearer-token"),
+                        (
+                            "Cookie",
+                            "__Host-lenso-session=session-token; __Host-lenso-csrf=csrf-token",
+                        ),
+                        ("X-Csrf-Token", "csrf-token"),
+                    ],
+                    "",
+                )
+                .await,
+                400,
+                "bad_request",
+            );
+            assert!(
+                endpoint.observed().is_none(),
+                "rejections must not dispatch"
+            );
+
+            let safe = request(
+                address,
+                "GET",
+                "/orders/42",
+                &[("Cookie", "theme=dark; __Host-lenso-session=session-token")],
+                "",
+            )
+            .await;
+            assert_eq!(safe.status, 200);
+            let observed = endpoint.observed().unwrap();
+            let credential = observed.credential.unwrap();
+            assert_eq!(credential.scheme, "session");
+            assert_eq!(credential.value, "session-token");
+            assert!(
+                observed
+                    .headers
+                    .iter()
+                    .all(|header| header.name != "cookie")
+            );
+
+            let accepted = request(
+                address,
+                "POST",
+                "/orders",
+                &[
+                    (
+                        "Cookie",
+                        "theme=dark; __Host-lenso-session=session-token; __Host-lenso-csrf=csrf-token",
+                    ),
+                    ("X-Csrf-Token", "csrf-token"),
+                ],
+                "",
+            )
+            .await;
+            assert_eq!(accepted.status, 200);
+            let observed = endpoint.observed().unwrap();
+            let credential = observed.credential.unwrap();
+            assert_eq!(credential.scheme, "session");
+            assert_eq!(credential.value, "session-token");
+            assert!(
+                observed
+                    .headers
+                    .iter()
+                    .all(|header| header.name != "cookie" && header.name != "x-csrf-token"),
+                "Ingress-owned Cookie and CSRF evidence must not reach the Endpoint"
+            );
+
+            let bearer = request(
+                address,
+                "POST",
+                "/orders",
+                &[
+                    ("Authorization", "Bearer bearer-token"),
+                    ("Cookie", "theme=dark"),
+                ],
+                "",
+            )
+            .await;
+            assert_eq!(bearer.status, 200);
+            let observed = endpoint.observed().unwrap();
+            let credential = observed.credential.unwrap();
+            assert_eq!(credential.scheme, "bearer");
+            assert_eq!(credential.value, "bearer-token");
+            assert!(
+                observed
+                    .headers
+                    .iter()
+                    .all(|header| header.name != "cookie")
+            );
+
+            assert_eq!(
+                app.shutdown(Duration::from_secs(1)).await,
+                ShutdownOutcome::Clean
+            );
         })
         .await;
 }
