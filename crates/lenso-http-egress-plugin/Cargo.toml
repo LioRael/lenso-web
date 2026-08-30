@@ -26,6 +26,9 @@ tokio.workspace = true
 
 [dev-dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+http-body-util = "0.1"
+hyper = { version = "1", features = ["http2", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 lenso-app-plan.workspace = true
 lenso-runner.workspace = true
 tokio = { workspace = true, features = ["macros", "time"] }
