@@ -4,7 +4,7 @@
   "comparison_boundary": "Independent client and server processes on loopback using the same zero-byte echo handler. Bare Axum has no transport policy; axum_transport adds the same request ID, sensitive header, body/head, response header, and concurrency policy class; bridge adds a bounded single-owner dispatch; lenso includes immutable Host admission in the resolved Plan, bounded live connections and HTTP/2 streams, header/body/idle deadlines, Web Ingress, Kernel invocation, and the native Endpoint Module.",
   "source": {
     "base_repository_commit": "d4943b1ffd30c90d2621ef4b9884adbb1e206bbc",
-    "benchmark_source": "Delivery branch based on base_repository_commit with the bounded Ingress, low-overhead hot-path, and Host admission changes described by advisor-plans/001-bound-ingress-resources.md and advisor-plans/002-align-http-admission.md.",
+    "benchmark_source": "Commit b3ff552 (PR #36), based on base_repository_commit, with bounded Ingress resources, a low-overhead hot path, and Host-owned admission alignment.",
     "command": "/Users/leosouthey/Projects/framework/.lenso-tools/bin/lenso-cargo bench --locked -p lenso-web-ingress-plugin --bench web_execution_profile",
     "profile": "release",
     "samples_per_throughput_case": 3,

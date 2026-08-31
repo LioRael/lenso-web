@@ -502,4 +502,4 @@ fixed at the Ingress routing or operation-granularity boundary. The benchmark
 does not change the portable Kernel or imply live Instance migration.
 
 The checked host-specific sample and its decision are recorded in
-[`docs/evidence/web-execution-profile-2026-08-25.json`](docs/evidence/web-execution-profile-2026-08-25.json).
+[`docs/evidence/web-execution-profile-2026-08-30.json`](docs/evidence/web-execution-profile-2026-08-30.json).
