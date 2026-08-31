@@ -33,9 +33,9 @@ use lenso_native_adapter::{
 };
 use lenso_runner::TokioDriver;
 use lenso_web_ingress_plugin::{
-    PACKAGE_ID, PACKAGE_VERSION, SessionCookieConfig, WebIngressConfig, WebIngressFactory,
-    WebIngressListenerCoordinator, WebIngressMiddleware, WebIngressMiddlewareOutcome,
-    WebIngressRequest, WebIngressResponse,
+    PACKAGE_ID, PACKAGE_VERSION, SessionCookieConfig, WebIngressConfig, WebIngressDiagnostics,
+    WebIngressEndpointFailure, WebIngressFactory, WebIngressListenerCoordinator,
+    WebIngressMiddleware, WebIngressMiddlewareOutcome, WebIngressRequest, WebIngressResponse,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -46,6 +46,32 @@ use tokio::{
 const ORDERS_PACKAGE_ID: &str = "fixture.orders-http";
 const STATUS_PACKAGE_ID: &str = "fixture.status-http";
 const SDK_PACKAGE_ID: &str = "fixture.sdk-orders-http";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DiagnosticEvent {
+    request_id: String,
+    route_id: String,
+    provider_index: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+struct RecordingDiagnostics {
+    events: Rc<RefCell<Vec<DiagnosticEvent>>>,
+}
+
+impl WebIngressDiagnostics for RecordingDiagnostics {
+    fn endpoint_runtime_failure(&self, event: WebIngressEndpointFailure<'_>) {
+        self.events.borrow_mut().push(DiagnosticEvent {
+            request_id: event.request_id().to_owned(),
+            route_id: event.route_id().to_owned(),
+            provider_index: event.provider_index(),
+        });
+        assert!(matches!(
+            event.failure(),
+            RuntimeFailure::PluginFailure { .. }
+        ));
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 struct GlobalMiddleware {
@@ -183,6 +209,42 @@ async fn global_middleware_wraps_routes_and_can_short_circuit() {
                     "after:/blocked",
                     "before:/middleware-error",
                 ]
+            );
+
+            assert_eq!(
+                app.shutdown(Duration::from_secs(1)).await,
+                ShutdownOutcome::Clean
+            );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn host_diagnostics_observe_runtime_failures_without_changing_http_errors() {
+    LocalSet::new()
+        .run_until(async {
+            let endpoint =
+                FixtureEndpointFactory::new(ORDERS_PACKAGE_ID, [("orders.fail", "GET", "/fail")]);
+            let diagnostics = RecordingDiagnostics::default();
+            let events = diagnostics.events.clone();
+            let ingress = WebIngressFactory::default().with_diagnostics(diagnostics);
+            let app = start(
+                project(&[ProviderPlan::new("orders-http", ORDERS_PACKAGE_ID)]),
+                &ingress,
+                [endpoint],
+            )
+            .await
+            .unwrap();
+
+            let response = request(ingress.local_address().unwrap(), "GET", "/fail", &[], "").await;
+            assert_error(&response, 503, "endpoint_unavailable");
+            assert_eq!(
+                events.borrow().as_slice(),
+                [DiagnosticEvent {
+                    request_id: "lenso-0".to_owned(),
+                    route_id: "orders.fail".to_owned(),
+                    provider_index: 0,
+                }]
             );
 
             assert_eq!(
@@ -1539,6 +1601,11 @@ impl EndpointProvider for FixtureEndpoint {
         let blocked_started = self.blocked_started.clone();
         let blocked_dropped = self.blocked_dropped.clone();
         Box::pin(async move {
+            if request.route_id == "orders.fail" {
+                return Err(RuntimeFailure::PluginFailure {
+                    detail: "fixture Endpoint failed".to_owned(),
+                });
+            }
             if request.route_id == "orders.never" {
                 let _drop_flag = DropFlag(blocked_dropped);
                 blocked_started.set(true);
