@@ -1,6 +1,6 @@
 [package]
 name = "lenso-capability-http-endpoint"
-version = "0.2.7"
+version = "0.2.8"
 description = "Portable HTTP Endpoint Capability contract for Lenso backend Plugins."
 edition.workspace = true
 license.workspace = true
