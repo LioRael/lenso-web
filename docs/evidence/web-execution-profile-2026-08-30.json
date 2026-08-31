@@ -5,7 +5,7 @@
   "source": {
     "base_repository_commit": "d4943b1ffd30c90d2621ef4b9884adbb1e206bbc",
     "benchmark_source": "Commit b3ff552 (PR #36), based on base_repository_commit, with bounded Ingress resources, a low-overhead hot path, and Host-owned admission alignment.",
-    "command": "/Users/leosouthey/Projects/framework/.lenso-tools/bin/lenso-cargo bench --locked -p lenso-web-ingress-plugin --bench web_execution_profile",
+    "command": "cargo bench --locked -p lenso-web-ingress-plugin --bench web_execution_profile",
     "profile": "release",
     "samples_per_throughput_case": 3,
     "requests_per_throughput_sample": 20000,
