@@ -333,6 +333,31 @@ return `502`, unavailable Endpoint execution returns `503`, and Endpoint
 deadlines return `504`. Every Ingress-produced response carries a generated
 `x-request-id` and `x-content-type-options: nosniff`.
 
+Hosts may install `WebIngressDiagnostics` on the concrete Ingress factory to
+observe an Endpoint Runtime Failure together with its trusted request ID, route
+ID, and bound provider index before the failure is mapped to a generic `503` or
+`504`. Diagnostics receive neither credentials nor request bodies and cannot
+change routing or the HTTP response:
+
+```rust,ignore
+#[derive(Debug)]
+struct DevelopmentDiagnostics;
+
+impl WebIngressDiagnostics for DevelopmentDiagnostics {
+    fn endpoint_runtime_failure(&self, event: WebIngressEndpointFailure<'_>) {
+        tracing::warn!(
+            request_id = event.request_id(),
+            route_id = event.route_id(),
+            provider_index = event.provider_index(),
+            failure = ?event.failure(),
+            "HTTP Endpoint failed",
+        );
+    }
+}
+
+let ingress = WebIngressFactory::new().with_diagnostics(DevelopmentDiagnostics);
+```
+
 Hosts can install transport-wide policy on one concrete Ingress factory.
 Global Ingress middleware runs after request-head/body limits, request-ID
 replacement, hop-by-hop filtering, and credential isolation. Request steps run

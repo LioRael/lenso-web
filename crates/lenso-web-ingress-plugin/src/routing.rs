@@ -11,7 +11,10 @@ use lenso_capability_http_endpoint::{
 use lenso_kernel::{CancellationToken, PluginDependencies, RuntimeFailure};
 use matchit::Router;
 
-use crate::{WebIngressRoute, WebIngressRouteManifest, plugin_failure, server::InboundRequest};
+use crate::{
+    WebIngressDiagnostics, WebIngressEndpointFailure, WebIngressRoute, WebIngressRouteManifest,
+    plugin_failure, server::InboundRequest,
+};
 
 #[derive(Debug)]
 struct RouteTarget {
@@ -22,6 +25,7 @@ struct RouteTarget {
 #[derive(Debug)]
 pub(super) struct RouteTable {
     dependencies: PluginDependencies,
+    diagnostics: Rc<dyn WebIngressDiagnostics>,
     providers: ManyPort<EndpointClient>,
     methods: HashMap<Method, Router<RouteTarget>>,
     manifest: WebIngressRouteManifest,
@@ -42,6 +46,7 @@ impl RouteTable {
         providers: ManyPort<EndpointClient>,
         dependencies: &PluginDependencies,
         request_timeout: Duration,
+        diagnostics: Rc<dyn WebIngressDiagnostics>,
     ) -> Result<Rc<Self>, RuntimeFailure> {
         let mut methods = HashMap::<Method, Router<RouteTarget>>::new();
         let mut manifest = Vec::new();
@@ -100,6 +105,7 @@ impl RouteTable {
         }
         Ok(Rc::new(Self {
             dependencies: dependencies.clone(),
+            diagnostics,
             providers,
             manifest: WebIngressRouteManifest::new(manifest),
             methods,
@@ -140,11 +146,15 @@ impl RouteTable {
             .collect();
         let route_id = matched.value.route_id.clone();
         let provider_index = matched.value.provider_index;
+        let request_id = request.request_id.clone();
         let cancellation = CancellationToken::new();
         let context = self
             .dependencies
             .invocation_context_after(self.request_timeout, cancellation.clone())
-            .map_err(|_| DispatchError::Unavailable)?;
+            .map_err(|failure| {
+                self.observe_failure(&request_id, &route_id, provider_index, &failure);
+                DispatchError::Unavailable
+            })?;
         let app_cancellation = request.cancellation;
         let disconnected = request.disconnected;
         let cancelled = async move {
@@ -175,8 +185,8 @@ impl RouteTable {
                 path: request.path,
                 path_parameters,
                 query: request.query,
-                request_id: request.request_id,
-                route_id,
+                request_id: request_id.clone(),
+                route_id: route_id.clone(),
             },
         );
         futures::pin_mut!(invocation, cancelled);
@@ -189,11 +199,31 @@ impl RouteTable {
         };
         outcome.map_err(|error| match error {
             EndpointHandleInvocationError::Domain(_) => DispatchError::Rejected,
-            EndpointHandleInvocationError::Runtime(RuntimeFailure::DeadlineExceeded { .. }) => {
-                DispatchError::TimedOut
+            EndpointHandleInvocationError::Runtime(failure) => {
+                self.observe_failure(&request_id, &route_id, provider_index, &failure);
+                if matches!(failure, RuntimeFailure::DeadlineExceeded { .. }) {
+                    DispatchError::TimedOut
+                } else {
+                    DispatchError::Unavailable
+                }
             }
-            EndpointHandleInvocationError::Runtime(_) => DispatchError::Unavailable,
         })
+    }
+
+    fn observe_failure(
+        &self,
+        request_id: &str,
+        route_id: &str,
+        provider_index: usize,
+        failure: &RuntimeFailure,
+    ) {
+        self.diagnostics
+            .endpoint_runtime_failure(WebIngressEndpointFailure::new(
+                request_id,
+                route_id,
+                provider_index,
+                failure,
+            ));
     }
 
     fn allowed_methods(&self, path: &str) -> Vec<Method> {

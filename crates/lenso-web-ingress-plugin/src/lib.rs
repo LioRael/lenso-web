@@ -1,6 +1,7 @@
 //! General-purpose linked Rust HTTP Ingress Plugin for Lenso backends.
 
 mod config;
+mod diagnostics;
 mod middleware;
 mod replication;
 mod routing;
@@ -23,6 +24,7 @@ use lenso_native_adapter::{NativePluginFactory, NativePluginFactoryContext, Nati
 use tokio::net::TcpListener;
 
 pub use config::{SessionCookieConfig, WebIngressConfig};
+pub use diagnostics::{WebIngressDiagnostics, WebIngressEndpointFailure};
 pub use middleware::{
     WebIngressMiddleware, WebIngressMiddlewareOutcome, WebIngressRequest, WebIngressResponse,
 };
@@ -36,7 +38,7 @@ pub const PACKAGE_ID: &str = "lenso.web-ingress";
 pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Default)]
-struct WebIngressObserver {
+struct WebIngressState {
     local_address: Cell<Option<SocketAddr>>,
     route_manifest: RefCell<Option<WebIngressRouteManifest>>,
 }
@@ -44,8 +46,9 @@ struct WebIngressObserver {
 /// Native Plugin factory and observable endpoint handle for one Ingress.
 #[derive(Clone, Debug)]
 pub struct WebIngressFactory {
+    diagnostics: Rc<dyn WebIngressDiagnostics>,
     middleware: Vec<Rc<dyn WebIngressMiddleware>>,
-    observer: Rc<WebIngressObserver>,
+    observer: Rc<WebIngressState>,
     replica: Option<WebIngressReplica>,
 }
 
@@ -54,8 +57,9 @@ impl WebIngressFactory {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            diagnostics: Rc::new(diagnostics::NoopDiagnostics),
             middleware: Vec::new(),
-            observer: Rc::new(WebIngressObserver::default()),
+            observer: Rc::new(WebIngressState::default()),
             replica: None,
         }
     }
@@ -64,8 +68,9 @@ impl WebIngressFactory {
     pub fn replicated(coordinator: &WebIngressListenerCoordinator) -> Result<Self, RuntimeFailure> {
         let replica = coordinator.allocate_replica()?;
         Ok(Self {
+            diagnostics: Rc::new(diagnostics::NoopDiagnostics),
             middleware: Vec::new(),
-            observer: Rc::new(WebIngressObserver::default()),
+            observer: Rc::new(WebIngressState::default()),
             replica: Some(replica),
         })
     }
@@ -74,6 +79,13 @@ impl WebIngressFactory {
     #[must_use]
     pub fn with_middleware(mut self, middleware: impl WebIngressMiddleware + 'static) -> Self {
         self.middleware.push(Rc::new(middleware));
+        self
+    }
+
+    /// Installs a Host-owned observer for internal failures hidden from HTTP clients.
+    #[must_use]
+    pub fn with_diagnostics(mut self, diagnostics: impl WebIngressDiagnostics + 'static) -> Self {
+        self.diagnostics = Rc::new(diagnostics);
         self
     }
 
@@ -132,6 +144,7 @@ impl NativePluginFactory for WebIngressFactory {
             Vec::new(),
             WebIngressLifecycle {
                 config,
+                diagnostics: self.diagnostics.clone(),
                 endpoints: ManyPort::default(),
                 middleware: self.middleware.clone(),
                 observer: self.observer.clone(),
@@ -144,9 +157,10 @@ impl NativePluginFactory for WebIngressFactory {
 
 struct WebIngressLifecycle {
     config: WebIngressConfig,
+    diagnostics: Rc<dyn WebIngressDiagnostics>,
     endpoints: ManyPort<EndpointClient>,
     middleware: Vec<Rc<dyn WebIngressMiddleware>>,
-    observer: Rc<WebIngressObserver>,
+    observer: Rc<WebIngressState>,
     listener: Rc<RefCell<Option<TcpListener>>>,
     replica: Option<WebIngressReplica>,
 }
@@ -195,6 +209,7 @@ impl PluginLifecycle for WebIngressLifecycle {
         let config = self.config.clone();
         let middleware = self.middleware.clone();
         let dependencies = context.dependencies().clone();
+        let diagnostics = self.diagnostics.clone();
         let endpoints = self.endpoints.clone();
         let readiness = context.readiness();
         let tasks = context.tasks().clone();
@@ -202,9 +217,13 @@ impl PluginLifecycle for WebIngressLifecycle {
         let observer = self.observer.clone();
         Box::pin(async move {
             endpoints.connect(&dependencies)?;
-            let routes =
-                routing::RouteTable::resolve(endpoints, &dependencies, config.request_timeout())
-                    .await?;
+            let routes = routing::RouteTable::resolve(
+                endpoints,
+                &dependencies,
+                config.request_timeout(),
+                diagnostics,
+            )
+            .await?;
             observer
                 .route_manifest
                 .borrow_mut()
