@@ -9,8 +9,8 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-lenso-auth-sdk = { version = "0.2.0", git = "https://github.com/LioRael/lenso-auth-module", rev = "cf7a9095489d2baad72bd8475d27adf54cfda5ad" }
-lenso-capability-auth = { version = "0.1.1", git = "https://github.com/LioRael/lenso-auth-module", rev = "cf7a9095489d2baad72bd8475d27adf54cfda5ad" }
+lenso-auth-sdk = { version = "0.2.1", git = "https://github.com/LioRael/lenso-auth-plugin", rev = "7f3b223679f07a4cd91a1b8d94b41b06130a4e80" }
+lenso-capability-auth = { version = "0.1.2", git = "https://github.com/LioRael/lenso-auth-plugin", rev = "7f3b223679f07a4cd91a1b8d94b41b06130a4e80" }
 lenso-capability-http-endpoint = { version = "0.2.7", path = "../lenso-capability-http-endpoint" }
 lenso-kernel.workspace = true
 

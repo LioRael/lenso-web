@@ -24,6 +24,16 @@ while IFS=: read -r manifest _ assignment; do
   esac
 done < <(rg -n --no-heading -o 'path\s*=\s*"[^"]+"' --glob 'Cargo.toml' . || true)
 
+cargo_bin="${LENSO_CARGO_BIN:-cargo}"
+metadata="$($cargo_bin metadata --locked --format-version=1)"
+for package in lenso lenso-app-plan lenso-kernel lenso-native-adapter lenso-plugin-authoring lenso-contract-runtime; do
+  count="$(jq --arg package "$package" '[.packages[] | select(.name == $package)] | length' <<<"$metadata")"
+  if [[ "$count" != "1" ]]; then
+    echo "$package resolved $count times; exactly one suite source is required" >&2
+    exit 1
+  fi
+done
+
 if rg -n 'lenso-(app-plan|kernel|runtime-conformance).*path' --glob 'Cargo.toml' .; then
   echo "portable core must be consumed through released packages" >&2
   exit 1
