@@ -945,7 +945,6 @@ dependencies = [
  "http",
  "lenso",
  "lenso-capability-http-endpoint-macros",
- "lenso-contract-codegen",
  "lenso-contract-runtime",
  "lenso-kernel",
  "lenso-plugin-authoring",
