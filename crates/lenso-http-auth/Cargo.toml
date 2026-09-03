@@ -1,6 +1,6 @@
 [package]
 name = "lenso-http-auth"
-version = "0.1.7"
+version = "0.1.8"
 description = "Auth actor extraction helpers for Lenso HTTP Endpoint providers."
 edition.workspace = true
 license.workspace = true
@@ -11,7 +11,7 @@ rust-version.workspace = true
 [dependencies]
 lenso-auth-sdk = { version = "0.2.1" }
 lenso-capability-auth = { version = "0.1.2" }
-lenso-capability-http-endpoint = { version = "0.2.9", path = "../lenso-capability-http-endpoint" }
+lenso-capability-http-endpoint = { version = "0.2.10", path = "../lenso-capability-http-endpoint" }
 lenso-kernel.workspace = true
 
 [lints]
