@@ -26,7 +26,6 @@ http = "1"
 lenso = { version = "0.5.0" }
 lenso-app-plan = { version = "0.3.0" }
 lenso-contract-authoring = { version = "0.1.1" }
-lenso-contract-codegen = { version = "=0.6.4" }
 lenso-contract-runtime = { version = "0.1.3" }
 lenso-kernel = { version = "0.2.0" }
 lenso-native-adapter = { version = "0.3.0" }
