@@ -28,6 +28,7 @@ async fn plugin_authored_query_endpoint_routes_through_the_real_ingress() {
                 "order-search",
                 lenso_web_query_endpoint_fixture::PACKAGE_ID,
             )
+            .with_authoring(2, "lenso.native-authoring@2")
             .with_capability(
                 CapabilityEndpointPlan::new(
                     CAPABILITY_ID,

@@ -39,14 +39,12 @@
         "name": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^__Host-[!#$%&'*+.^_`|~0-9A-Za-z-]*$"
+          "maxLength": 128
         },
         "csrf_cookie_name": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^__Host-[!#$%&'*+.^_`|~0-9A-Za-z-]*$"
+          "maxLength": 128
         },
         "csrf_header_name": {
           "type": "string",

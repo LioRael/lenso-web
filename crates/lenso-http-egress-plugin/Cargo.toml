@@ -16,7 +16,7 @@ root-slot = "http-clients"
 bytes.workspace = true
 futures.workspace = true
 lenso.workspace = true
-lenso-capability-http-client = "=0.2.5"
+lenso-capability-http-client = { version = "0.3.0", path = "../lenso-capability-http-client" }
 lenso-kernel.workspace = true
 lenso-native-adapter.workspace = true
 lenso-native-adapter-macros.workspace = true

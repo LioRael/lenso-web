@@ -29,7 +29,7 @@ serde_json.workspace = true
 serde_urlencoded.workspace = true
 
 [dev-dependencies]
-lenso = { version = "0.5.17", git = "https://github.com/LioRael/lenso-runtime-rust", rev = "1e3915a5a3ae4264262d6ce3e6bc59cc7b45262d" }
+lenso.workspace = true
 
 [build-dependencies]
 lenso-contract-codegen = "=0.9.0"
