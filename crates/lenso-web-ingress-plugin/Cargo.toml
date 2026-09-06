@@ -1,6 +1,6 @@
 [package]
 name = "lenso-web-ingress-plugin"
-version = "0.3.8"
+version = "0.4.0"
 description = "General-purpose linked Rust HTTP Ingress Plugin for Lenso backends."
 edition.workspace = true
 license.workspace = true
