@@ -9,9 +9,9 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-lenso-auth-sdk = { version = "0.2.1" }
-lenso-capability-auth = { version = "0.1.2" }
-lenso-capability-http-endpoint = { version = "0.2.9", path = "../lenso-capability-http-endpoint" }
+lenso-auth-sdk = "=0.2.1"
+lenso-capability-auth = "=0.1.2"
+lenso-capability-http-endpoint = "=0.2.9"
 lenso-kernel.workspace = true
 
 [lints]

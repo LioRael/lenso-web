@@ -3,13 +3,16 @@ use std::{fmt, rc::Rc};
 use futures::future::LocalBoxFuture;
 use lenso_kernel::{InvocationContext, NativeRequestEndpoint, NativeRequestFuture, NativeRequestHandle, PluginDependencies, RequestCapability, RuntimeFailure};
 
-use lenso_plugin_authoring::{BoundCapabilityClient, CapabilityClient, CapabilityClientMany};
+use lenso_plugin_authoring::{BoundCapabilityClient, CapabilityClient, CapabilityClientMany, CapabilityReference};
 pub const CAPABILITY_ID: &str = "lenso.http.client@1";
 pub const DESCRIPTOR_VERSION: &str = "1.0.1";
+pub const DESCRIPTOR_DIGEST: &str = "sha256:21b24a413879f67cbd6a0c43ebe7b087deaaf916f49b49f4057ea66e032838c7";
 pub const PORTABLE: bool = true;
 pub const CROSS_LANE_TRANSFER: bool = true;
 pub const CLIENT_CAPABILITY_ID: &str = CAPABILITY_ID;
 pub const CLIENT_DESCRIPTOR_VERSION: &str = DESCRIPTOR_VERSION;
+pub const CLIENT_DESCRIPTOR_DIGEST: &str = DESCRIPTOR_DIGEST;
+pub const CLIENT_CONTRACT: CapabilityReference<ClientClient> = CapabilityReference::new(CAPABILITY_ID, DESCRIPTOR_VERSION, DESCRIPTOR_DIGEST);
 
 #[doc(hidden)]
 #[macro_export]
@@ -17,11 +20,23 @@ macro_rules! __lenso_provided_client { () => { "{\"capability_id\":\"lenso.http.
 
 #[doc(hidden)]
 #[macro_export]
-macro_rules! __lenso_required_client_client { () => { "{\"capability_id\":\"lenso.http.client@1\",\"descriptor_version\":\"1.0.1\",\"cardinality\":\"one\"}" }; }
+macro_rules! __lenso_required_client_client {
+    () => { "{\"capability_id\":\"lenso.http.client@1\",\"descriptor_version\":\"1.0.1\",\"cardinality\":\"one\"}" };
+    ($requirement_id:literal) => { concat!("{\"requirement_id\":", stringify!($requirement_id), ",\"capability_id\":\"lenso.http.client@1\",\"descriptor_version\":\"1.0.1\",\"cardinality\":\"one\"}") };
+}
 
 #[doc(hidden)]
 #[macro_export]
-macro_rules! __lenso_required_many_client_client { () => { "{\"capability_id\":\"lenso.http.client@1\",\"descriptor_version\":\"1.0.1\",\"cardinality\":\"many\"}" }; }
+macro_rules! __lenso_required_optional_client_client {
+    ($requirement_id:literal) => { concat!("{\"requirement_id\":", stringify!($requirement_id), ",\"capability_id\":\"lenso.http.client@1\",\"descriptor_version\":\"1.0.1\",\"cardinality\":\"optional\"}") };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __lenso_required_many_client_client {
+    () => { "{\"capability_id\":\"lenso.http.client@1\",\"descriptor_version\":\"1.0.1\",\"cardinality\":\"many\"}" };
+    ($requirement_id:literal) => { concat!("{\"requirement_id\":", stringify!($requirement_id), ",\"capability_id\":\"lenso.http.client@1\",\"descriptor_version\":\"1.0.1\",\"cardinality\":\"many\"}") };
+}
 
 pub const SEND_OPERATION: &str = "send";
 
@@ -225,6 +240,41 @@ macro_rules! __lenso_native_lower_client {
     };
 }
 
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __lenso_native_lower_object_client {
+    ($object:ty, $plugin:ty, $support:path) => {
+        use $support as __LensoNativeSupportClient;
+        impl $crate::ClientProvider for $object {
+        fn send(&self, context: __LensoNativeSupportClient::InvocationContext, request: $crate::SendRequest) -> __LensoNativeSupportClient::NativeRequestFuture<$crate::Client> {
+            let object = self.clone();
+            ::std::boxed::Box::pin(async move {
+                let plugin = object.get()?;
+                let result = <$plugin>::send(plugin.as_ref(), context, request).await;
+                $crate::__LensoIntoClientSendResult::__lenso_into_result(result)
+            })
+        }
+        }
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __lenso_native_lower_trait_object_client {
+    ($object:ty, $plugin:ty, $support:path) => {
+        use $support as __LensoNativeSupportClient;
+        impl $crate::ClientProvider for $object {
+        fn send(&self, context: __LensoNativeSupportClient::InvocationContext, request: $crate::SendRequest) -> __LensoNativeSupportClient::NativeRequestFuture<$crate::Client> {
+            let object = self.clone();
+            ::std::boxed::Box::pin(async move {
+                let plugin = object.get()?;
+                <$plugin as $crate::ClientProvider>::send(plugin.as_ref(), context, request).await
+            })
+        }
+        }
+    };
+}
+
 #[derive(Debug)]
 struct ClientRequestEndpoint { provider: Rc<dyn ClientProvider> }
 
@@ -295,7 +345,7 @@ macro_rules! __lenso_native_provide_client {
     }};
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ClientClient {
     send: NativeRequestHandle<Client>,
 }
@@ -306,6 +356,13 @@ impl ClientClient {
 
     pub fn from_dependencies(dependencies: &PluginDependencies) -> Result<Self, RuntimeFailure> {
         <Self as CapabilityClient>::from_dependencies(dependencies)
+    }
+
+    pub fn from_requirement(
+        dependencies: &PluginDependencies,
+        requirement_id: &str,
+    ) -> Result<Self, RuntimeFailure> {
+        <Self as CapabilityClient>::from_requirement(dependencies, requirement_id)
     }
 
     pub async fn send(&self, request: SendRequest) -> Result<SendResponse, ClientInvocationError> {
@@ -334,6 +391,14 @@ impl CapabilityClient for ClientClient {
         })
     }
 
+    fn from_requirement(
+        dependencies: &PluginDependencies,
+        requirement_id: &str,
+    ) -> Result<Self, RuntimeFailure> {
+        let dependencies = dependencies.requirement(requirement_id)?;
+        Self::from_dependencies(&dependencies)
+    }
+
     fn already_connected() -> RuntimeFailure {
         RuntimeFailure::PluginFailure {
             detail: format!("Capability Port {CAPABILITY_ID} was connected more than once"),
@@ -358,6 +423,14 @@ impl CapabilityClientMany for ClientClient {
                 ))
             })
             .collect()
+    }
+
+    fn many_from_requirement(
+        dependencies: &PluginDependencies,
+        requirement_id: &str,
+    ) -> Result<Vec<BoundCapabilityClient<Self>>, RuntimeFailure> {
+        let dependencies = dependencies.requirement(requirement_id)?;
+        Self::many_from_dependencies(&dependencies)
     }
 }
 

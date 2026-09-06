@@ -21,15 +21,19 @@ output = "src/generated.rs"
 futures.workspace = true
 http.workspace = true
 lenso-capability-http-endpoint-macros = { path = "../lenso-capability-http-endpoint-macros", version = "0.1.4" }
-lenso-contract-runtime.workspace = true
-lenso-kernel.workspace = true
-lenso-plugin-authoring.workspace = true
+lenso-contract-runtime = "0.2.0"
+lenso-kernel = "0.3.5"
+lenso-plugin-authoring = "0.2.0"
 serde.workspace = true
 serde_json.workspace = true
 serde_urlencoded.workspace = true
 
 [dev-dependencies]
-lenso.workspace = true
+lenso = { version = "0.5.17", git = "https://github.com/LioRael/lenso-runtime-rust", rev = "1e3915a5a3ae4264262d6ce3e6bc59cc7b45262d" }
+
+[build-dependencies]
+lenso-contract-codegen = "=0.9.0"
+serde_json = { workspace = true, features = ["preserve_order"] }
 
 [lints]
 workspace = true

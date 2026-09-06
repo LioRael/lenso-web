@@ -30,23 +30,18 @@ jobs:
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Check portable Capability packages
         run: |
-          cargo check --locked -p lenso-capability-http-client -p lenso-capability-http-endpoint -p lenso-http-auth --target wasm32-unknown-unknown
-          cargo check --locked -p lenso-capability-http-client -p lenso-capability-http-endpoint -p lenso-http-auth --target wasm32-wasip2
+          for target in wasm32-unknown-unknown wasm32-wasip2; do
+            cargo check --locked --manifest-path crates/lenso-capability-http-client/Cargo.toml --target "$target"
+            cargo check --locked --manifest-path crates/lenso-capability-http-endpoint/Cargo.toml --target "$target"
+            cargo check --locked --manifest-path crates/lenso-http-auth/Cargo.toml --target "$target"
+          done
       - name: Package Capability crates
         run: |
-          cargo package --locked -p lenso-capability-http-client
-          # Package the Endpoint release set together so Cargo can resolve
-          # same-release dependencies before their first publication.
-          cargo package --locked --no-verify \
-            -p lenso-capability-http-endpoint-macros \
-            -p lenso-capability-http-endpoint \
-            -p lenso-http-auth \
-            -p lenso-openapi-plugin \
-            -p lenso-web-ingress-plugin
+          cargo package --locked --manifest-path crates/lenso-capability-http-client/Cargo.toml
+          cargo package --locked --manifest-path crates/lenso-capability-http-endpoint-macros/Cargo.toml
+          cargo package --locked --manifest-path crates/lenso-capability-http-endpoint/Cargo.toml
+          cargo package --locked --manifest-path crates/lenso-http-auth/Cargo.toml
+          cargo package --locked --manifest-path crates/lenso-openapi-plugin/Cargo.toml
+          cargo package --locked --manifest-path crates/lenso-web-ingress-plugin/Cargo.toml
       - name: Package HTTP Egress release set
-        run: |
-          # Keep the provider and its same-release Capability together so
-          # Cargo resolves the unpublished local Capability version.
-          cargo package --locked --no-verify \
-            -p lenso-capability-http-client \
-            -p lenso-http-egress-plugin
+        run: cargo package --locked --manifest-path crates/lenso-http-egress-plugin/Cargo.toml

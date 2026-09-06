@@ -21,7 +21,7 @@ http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "http2", "server"] }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 lenso.workspace = true
-lenso-capability-http-endpoint = { version = "0.2.9", path = "../lenso-capability-http-endpoint" }
+lenso-capability-http-endpoint = "=0.2.9"
 lenso-kernel.workspace = true
 lenso-native-adapter.workspace = true
 matchit = "0.8"
@@ -33,8 +33,8 @@ tokio = { workspace = true, features = ["macros", "time"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 hyper = { version = "1", features = ["client", "http2"] }
 lenso-app-plan.workspace = true
-lenso-auth-sdk = { version = "0.2.1" }
-lenso-capability-auth = { version = "0.1.2" }
+lenso-auth-sdk = "=0.2.1"
+lenso-capability-auth = "=0.1.2"
 lenso-http-auth = { path = "../lenso-http-auth" }
 lenso-web-query-endpoint-fixture = { path = "../../tests/fixtures/query-endpoint-plugin" }
 lenso-runner.workspace = true

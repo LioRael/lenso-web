@@ -10,7 +10,7 @@ root-slot = "web"
 
 [dependencies]
 lenso.workspace = true
-lenso-capability-http-endpoint = { path = "../../crates/lenso-capability-http-endpoint" }
+lenso-capability-http-endpoint = "=0.2.9"
 serde.workspace = true
 
 [dev-dependencies]

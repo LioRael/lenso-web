@@ -15,11 +15,15 @@ output = "src/generated.rs"
 
 [dependencies]
 futures.workspace = true
-lenso-contract-runtime.workspace = true
-lenso-kernel.workspace = true
-lenso-plugin-authoring.workspace = true
+lenso-contract-runtime = "0.2.0"
+lenso-kernel = "0.3.5"
+lenso-plugin-authoring = "0.2.0"
 serde.workspace = true
 serde_json.workspace = true
+
+[build-dependencies]
+lenso-contract-codegen = "=0.9.0"
+serde_json = { workspace = true, features = ["preserve_order"] }
 
 [lints]
 workspace = true
