@@ -949,7 +949,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-capability-http-endpoint"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "futures",
  "http",
@@ -1023,7 +1023,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-http-auth"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "lenso-auth-sdk",
  "lenso-capability-auth",
@@ -1033,7 +1033,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-http-egress-plugin"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "axum",
  "bytes",
@@ -1096,7 +1096,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-openapi-plugin"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "futures",
  "lenso",
@@ -1158,7 +1158,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-web-ingress-plugin"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "axum",
  "bytes",
