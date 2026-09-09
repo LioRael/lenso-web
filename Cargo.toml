@@ -9,6 +9,7 @@ members = [
     "crates/lenso-web-ingress-plugin",
     "crates/lenso-openapi-plugin",
     "examples/greetings-http-plugin",
+    "examples/observe-sample-web-app",
     "tests/fixtures/query-endpoint-plugin",
 ]
 
