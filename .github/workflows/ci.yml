@@ -44,7 +44,7 @@ jobs:
           cargo package --locked --manifest-path crates/lenso-capability-http-stream-endpoint/Cargo.toml
           cargo package --locked --manifest-path crates/lenso-http-auth/Cargo.toml
           cargo package --locked --manifest-path crates/lenso-openapi-plugin/Cargo.toml
-          if cargo search --limit 1 lenso-capability-http-stream-endpoint | grep -q '^lenso-capability-http-stream-endpoint = "0.1.0"'; then
+          if cargo search --limit 1 lenso-capability-http-stream-endpoint | grep -q '^lenso-capability-http-stream-endpoint = "0.1.1"'; then
             cargo package --locked --manifest-path crates/lenso-web-ingress-plugin/Cargo.toml
           else
             echo "Skipping ingress verification until its new stream Capability dependency is published"

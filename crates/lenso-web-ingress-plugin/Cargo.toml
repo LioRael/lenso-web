@@ -23,7 +23,7 @@ hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 lenso.workspace = true
 lenso-app-plan.workspace = true
 lenso-capability-http-endpoint = { version = "0.3.1", path = "../lenso-capability-http-endpoint" }
-lenso-capability-http-stream-endpoint = { version = "0.1.0", path = "../lenso-capability-http-stream-endpoint" }
+lenso-capability-http-stream-endpoint = { version = "0.1.1", path = "../lenso-capability-http-stream-endpoint" }
 lenso-kernel.workspace = true
 lenso-native-adapter.workspace = true
 matchit = "0.8"
