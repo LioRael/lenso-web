@@ -5,6 +5,7 @@ General-purpose backend Web Interfaces and Plugins for Lenso.
 This repository owns:
 
 - `lenso.http.endpoint@1`, provided by backend Plugins that own HTTP behavior;
+- `lenso.http.stream-endpoint@1`, provided when a response must remain incremental;
 - `lenso-web-ingress-plugin`, which assembles immutable routes and owns HTTP transport;
 - `lenso.http.client@1`, required by backend Plugins that call upstream HTTP APIs;
 - `lenso-http-egress-plugin`, which provides policy-bounded outbound HTTP transport;
@@ -18,6 +19,7 @@ route registry.
 ## Current packages
 
 - `lenso-capability-http-endpoint`
+- `lenso-capability-http-stream-endpoint`
 - `lenso-capability-http-client`
 - `lenso-http-auth`
 - `lenso-http-egress-plugin`
@@ -31,7 +33,8 @@ Provider endpoints are generated. App Composition still decides whether an
 Instance exists and exactly which bindings it receives.
 
 `lenso-web-ingress-plugin` remains the deliberate compatibility exception. It is an
-endpoint-free `many lenso.http.endpoint@1` consumer and its public Factory also
+endpoint-free consumer of `many lenso.http.endpoint@1` and
+`many lenso.http.stream-endpoint@1`; its public Factory also
 accepts Host-owned middleware, listener observation, and lane-replica handles.
 The current struct authoring macro cannot inject those Host-only values into a
 consumer-only Plugin. Ingress routing nevertheless uses the generated typed
@@ -126,6 +129,15 @@ slot and no queue, which is usually inappropriate for an HTTP provider.
 Route providers are resolved through immutable `many` bindings. They describe
 their method/path table during activation, before the App Ready Gate opens;
 route collisions fail startup instead of changing behavior at runtime.
+
+Streaming providers use distinct `describe_stream` and `handle_stream`
+operations so one cohesive Plugin can provide both HTTP capabilities without
+Rust method-name collisions. `handle_stream` first emits exactly one `head`
+frame containing status and headers, then zero or more `chunk` frames containing
+body bytes, followed by a terminal event. Ingress never buffers those chunks.
+Malformed ordering or transport-owned response headers fail closed. Global
+Ingress middleware can inspect and modify the response head; it does not buffer
+or rewrite the stream body.
 
 Endpoint providers can put route attributes directly on handlers. The outer
 `#[endpoint]` attribute collects them at compile time and generates both the

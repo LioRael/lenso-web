@@ -1,0 +1,22 @@
+{
+  "id": "lenso.http.stream-endpoint@1",
+  "version": "1.0.0",
+  "portable": true,
+  "cross_lane_transfer": true,
+  "operations": [
+    {
+      "name": "describe_stream",
+      "interaction": "request",
+      "request_schema": "schemas/describe-request.schema.json",
+      "response_schema": "schemas/describe-response.schema.json",
+      "domain_error_schema": "schemas/describe-error.schema.json"
+    },
+    {
+      "name": "handle_stream",
+      "interaction": "stream",
+      "request_schema": "schemas/handle-open.schema.json",
+      "response_schema": "schemas/handle-frame.schema.json",
+      "domain_error_schema": "schemas/handle-error.schema.json"
+    }
+  ]
+}

@@ -33,6 +33,7 @@ jobs:
           for target in wasm32-unknown-unknown wasm32-wasip2; do
             cargo check --locked --manifest-path crates/lenso-capability-http-client/Cargo.toml --target "$target"
             cargo check --locked --manifest-path crates/lenso-capability-http-endpoint/Cargo.toml --target "$target"
+            cargo check --locked --manifest-path crates/lenso-capability-http-stream-endpoint/Cargo.toml --target "$target"
             cargo check --locked --manifest-path crates/lenso-http-auth/Cargo.toml --target "$target"
           done
       - name: Package Capability crates
@@ -40,8 +41,13 @@ jobs:
           cargo package --locked --manifest-path crates/lenso-capability-http-client/Cargo.toml
           cargo package --locked --manifest-path crates/lenso-capability-http-endpoint-macros/Cargo.toml
           cargo package --locked --manifest-path crates/lenso-capability-http-endpoint/Cargo.toml
+          cargo package --locked --manifest-path crates/lenso-capability-http-stream-endpoint/Cargo.toml
           cargo package --locked --manifest-path crates/lenso-http-auth/Cargo.toml
           cargo package --locked --manifest-path crates/lenso-openapi-plugin/Cargo.toml
-          cargo package --locked --manifest-path crates/lenso-web-ingress-plugin/Cargo.toml
+          if cargo search --limit 1 lenso-capability-http-stream-endpoint | grep -q '^lenso-capability-http-stream-endpoint = "0.1.0"'; then
+            cargo package --locked --manifest-path crates/lenso-web-ingress-plugin/Cargo.toml
+          else
+            echo "Skipping ingress verification until its new stream Capability dependency is published"
+          fi
       - name: Package HTTP Egress release set
         run: cargo package --locked --manifest-path crates/lenso-http-egress-plugin/Cargo.toml

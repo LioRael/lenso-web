@@ -16,7 +16,9 @@ use std::{
 };
 
 use lenso::prelude::ManyPort;
+use lenso_app_plan::{CapabilityRequirementPlan, authoring::PluginDescriptor};
 use lenso_capability_http_endpoint::EndpointClient;
+use lenso_capability_http_stream_endpoint::StreamEndpointClient;
 use lenso_kernel::{
     ActivateContext, PluginFuture, PluginLifecycle, PrepareContext, RuntimeFailure,
 };
@@ -36,6 +38,8 @@ pub use replication::{
 
 pub const PACKAGE_ID: &str = "lenso.web-ingress";
 pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Package-owned schema used by Hosts that register a customized Ingress factory.
+pub const CONFIGURATION_SCHEMA_JSON: &str = include_str!("../config.schema.json");
 
 #[derive(Debug, Default)]
 struct WebIngressState {
@@ -53,6 +57,24 @@ pub struct WebIngressFactory {
 }
 
 impl WebIngressFactory {
+    /// Returns the package-owned descriptor for Hosts that install this customizable factory.
+    #[must_use]
+    pub fn plugin_descriptor() -> PluginDescriptor {
+        PluginDescriptor::new(PACKAGE_ID, PACKAGE_VERSION, "http-ingress")
+            .with_requirement(CapabilityRequirementPlan::many(
+                lenso_capability_http_endpoint::CAPABILITY_ID,
+                lenso_capability_http_endpoint::DESCRIPTOR_VERSION,
+            ))
+            .with_requirement(CapabilityRequirementPlan::many(
+                lenso_capability_http_stream_endpoint::CAPABILITY_ID,
+                lenso_capability_http_stream_endpoint::DESCRIPTOR_VERSION,
+            ))
+            .with_configuration_schema(
+                serde_json::from_str(CONFIGURATION_SCHEMA_JSON)
+                    .expect("the embedded Web Ingress configuration schema is valid"),
+            )
+    }
+
     /// Creates a factory whose Plugin Instance policy comes from the Resolved App Plan.
     #[must_use]
     pub fn new() -> Self {
@@ -146,6 +168,7 @@ impl NativePluginFactory for WebIngressFactory {
                 config,
                 diagnostics: self.diagnostics.clone(),
                 endpoints: ManyPort::default(),
+                stream_endpoints: ManyPort::default(),
                 middleware: self.middleware.clone(),
                 observer: self.observer.clone(),
                 listener: Rc::new(RefCell::new(None)),
@@ -159,6 +182,7 @@ struct WebIngressLifecycle {
     config: WebIngressConfig,
     diagnostics: Rc<dyn WebIngressDiagnostics>,
     endpoints: ManyPort<EndpointClient>,
+    stream_endpoints: ManyPort<StreamEndpointClient>,
     middleware: Vec<Rc<dyn WebIngressMiddleware>>,
     observer: Rc<WebIngressState>,
     listener: Rc<RefCell<Option<TcpListener>>>,
@@ -211,14 +235,17 @@ impl PluginLifecycle for WebIngressLifecycle {
         let dependencies = context.dependencies().clone();
         let diagnostics = self.diagnostics.clone();
         let endpoints = self.endpoints.clone();
+        let stream_endpoints = self.stream_endpoints.clone();
         let readiness = context.readiness();
         let tasks = context.tasks().clone();
         let cancellation = context.cancellation();
         let observer = self.observer.clone();
         Box::pin(async move {
             endpoints.connect(&dependencies)?;
+            stream_endpoints.connect(&dependencies)?;
             let routes = routing::RouteTable::resolve(
                 endpoints,
+                stream_endpoints,
                 &dependencies,
                 config.request_timeout(),
                 diagnostics,
@@ -258,5 +285,25 @@ impl PluginLifecycle for WebIngressLifecycle {
 fn plugin_failure(detail: impl Into<String>) -> RuntimeFailure {
     RuntimeFailure::PluginFailure {
         detail: detail.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn customizable_factory_publishes_its_complete_host_descriptor() {
+        let descriptor = serde_json::to_value(WebIngressFactory::plugin_descriptor()).unwrap();
+        assert_eq!(descriptor["plugin_id"], PACKAGE_ID);
+        let requirements = descriptor["required_capabilities"].as_array().unwrap();
+        assert_eq!(requirements.len(), 2);
+        assert!(requirements.iter().any(|requirement| {
+            requirement["capability_id"] == lenso_capability_http_endpoint::CAPABILITY_ID
+        }));
+        assert!(requirements.iter().any(|requirement| {
+            requirement["capability_id"] == lenso_capability_http_stream_endpoint::CAPABILITY_ID
+        }));
+        assert!(descriptor["configuration_schema"].is_object());
     }
 }

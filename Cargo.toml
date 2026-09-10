@@ -4,6 +4,7 @@ members = [
     "crates/lenso-capability-http-client",
     "crates/lenso-capability-http-endpoint",
     "crates/lenso-capability-http-endpoint-macros",
+    "crates/lenso-capability-http-stream-endpoint",
     "crates/lenso-http-egress-plugin",
     "crates/lenso-http-auth",
     "crates/lenso-web-ingress-plugin",

@@ -1019,6 +1019,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "lenso-capability-http-stream-endpoint"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "lenso-contract-codegen",
+ "lenso-contract-runtime",
+ "lenso-kernel",
+ "lenso-plugin-authoring",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "lenso-contract-authoring"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1250,6 +1263,7 @@ dependencies = [
  "lenso-auth-sdk",
  "lenso-capability-auth",
  "lenso-capability-http-endpoint",
+ "lenso-capability-http-stream-endpoint",
  "lenso-http-auth",
  "lenso-kernel",
  "lenso-native-adapter",

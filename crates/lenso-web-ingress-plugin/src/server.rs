@@ -1,14 +1,16 @@
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     collections::HashSet,
     convert::Infallible,
     future::Future,
     panic::AssertUnwindSafe,
+    pin::Pin,
     rc::Rc,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    task::{Context, Poll},
     time::Instant,
 };
 
@@ -22,13 +24,17 @@ use http::{
     },
 };
 use http_body_util::{BodyExt as _, Full};
-use hyper::{body::Incoming, service::service_fn};
+use hyper::{
+    body::{Frame, Incoming},
+    service::service_fn,
+};
 use hyper_util::{
     rt::{TokioIo, TokioTimer},
     server::conn::auto,
 };
 use lenso_capability_http_endpoint::HandleResponse;
-use lenso_kernel::CancellationToken;
+use lenso_capability_http_stream_endpoint as stream_endpoint;
+use lenso_kernel::{CancellationToken, NativeStream, StreamEvent};
 use tokio::{
     net::TcpListener,
     sync::{Semaphore, oneshot},
@@ -37,8 +43,8 @@ use tokio::{
 use crate::{
     WebIngressConfig, WebIngressMiddleware, WebIngressRequest, WebIngressResponse, middleware,
     replication::{ReplicaConnection, ReplicaConnectionSource},
-    routing::DispatchError,
     routing::RouteTable,
+    routing::{DispatchError, DispatchResponse},
     session_cookie::{
         CredentialEvidence, CredentialRejection, SessionCookiePolicy, select_credential,
     },
@@ -187,7 +193,119 @@ fn request_id_header_value(mut value: u64) -> HeaderValue {
 struct IngressResponse {
     status: StatusCode,
     headers: HeaderMap,
-    body: Bytes,
+    body: IngressBody,
+}
+
+#[derive(Debug)]
+enum IngressBody {
+    Buffered(Bytes),
+    Streaming(NativeStream<stream_endpoint::StreamEndpointHandle>),
+}
+
+#[derive(Debug)]
+enum ResponseBody {
+    Buffered(Full<Bytes>),
+    Streaming(StreamingBody),
+}
+
+struct StreamingBody {
+    stream: Rc<NativeStream<stream_endpoint::StreamEndpointHandle>>,
+    receive: Option<
+        futures::future::LocalBoxFuture<
+            'static,
+            Result<
+                StreamEvent<stream_endpoint::HandleResponse, stream_endpoint::HandleError>,
+                lenso_kernel::RuntimeFailure,
+            >,
+        >,
+    >,
+    done: bool,
+}
+
+impl std::fmt::Debug for StreamingBody {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("StreamingBody")
+            .field("done", &self.done)
+            .finish_non_exhaustive()
+    }
+}
+
+impl hyper::body::Body for ResponseBody {
+    type Data = Bytes;
+    type Error = Infallible;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        match self.get_mut() {
+            Self::Buffered(body) => Pin::new(body).poll_frame(context),
+            Self::Streaming(body) => body.poll_frame(context),
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        match self {
+            Self::Buffered(body) => body.is_end_stream(),
+            Self::Streaming(body) => body.done,
+        }
+    }
+
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        match self {
+            Self::Buffered(body) => body.size_hint(),
+            Self::Streaming(_) => hyper::body::SizeHint::default(),
+        }
+    }
+}
+
+impl StreamingBody {
+    fn new(stream: NativeStream<stream_endpoint::StreamEndpointHandle>) -> Self {
+        Self {
+            stream: Rc::new(stream),
+            receive: None,
+            done: false,
+        }
+    }
+
+    fn poll_frame(
+        &mut self,
+        context: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, Infallible>>> {
+        loop {
+            if self.done {
+                return Poll::Ready(None);
+            }
+            let receive = self.receive.get_or_insert_with(|| {
+                let stream = self.stream.clone();
+                Box::pin(async move { stream.receive().await })
+            });
+            let event = match receive.as_mut().poll(context) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(event) => {
+                    self.receive = None;
+                    event
+                }
+            };
+            match event {
+                Ok(StreamEvent::Message(frame))
+                    if frame.kind == stream_endpoint::HandleResponseKind::Chunk
+                        && frame.status.is_none()
+                        && frame.headers.is_none() =>
+                {
+                    let body = frame.body.unwrap_or_default().into_shared();
+                    return Poll::Ready(Some(Ok(Frame::data(body))));
+                }
+                Ok(StreamEvent::PeerHalfClosed) => {}
+                Ok(StreamEvent::Terminal(_) | StreamEvent::Message(_)) | Err(_) => {
+                    self.stream.cancel();
+                    self.done = true;
+                    return Poll::Ready(None);
+                }
+            }
+        }
+    }
 }
 
 impl IngressResponse {
@@ -200,24 +318,37 @@ impl IngressResponse {
         Self {
             status,
             headers,
-            body: Bytes::from_static(body.as_bytes()),
+            body: IngressBody::Buffered(Bytes::from_static(body.as_bytes())),
         }
     }
 }
 
 impl IngressResponse {
-    fn into_response(self) -> Response<Full<Bytes>> {
-        let mut response = Response::new(Full::new(self.body));
+    fn into_response(self) -> Response<ResponseBody> {
+        let body = match self.body {
+            IngressBody::Buffered(body) => ResponseBody::Buffered(Full::new(body)),
+            IngressBody::Streaming(stream) => ResponseBody::Streaming(StreamingBody::new(stream)),
+        };
+        let mut response = Response::new(body);
         *response.status_mut() = self.status;
         *response.headers_mut() = self.headers;
         response
     }
 
-    fn into_middleware_response(self) -> WebIngressResponse {
-        let mut response = Response::new(self.body);
+    fn into_middleware_response(
+        self,
+    ) -> (
+        WebIngressResponse,
+        Option<NativeStream<stream_endpoint::StreamEndpointHandle>>,
+    ) {
+        let (body, stream) = match self.body {
+            IngressBody::Buffered(body) => (body, None),
+            IngressBody::Streaming(stream) => (Bytes::new(), Some(stream)),
+        };
+        let mut response = Response::new(body);
         *response.status_mut() = self.status;
         *response.headers_mut() = self.headers;
-        response
+        (response, stream)
     }
 
     fn from_middleware_response(response: WebIngressResponse) -> Self {
@@ -234,8 +365,13 @@ impl IngressResponse {
         Self {
             status: parts.status,
             headers,
-            body,
+            body: IngressBody::Buffered(body),
         }
+    }
+
+    fn with_stream(mut self, stream: NativeStream<stream_endpoint::StreamEndpointHandle>) -> Self {
+        self.body = IngressBody::Streaming(stream);
+        self
     }
 }
 
@@ -480,7 +616,7 @@ impl IngressService {
     async fn call(
         self,
         mut request: Request<Incoming>,
-    ) -> Result<Response<Full<Bytes>>, Infallible> {
+    ) -> Result<Response<ResponseBody>, Infallible> {
         let _active_request = self.activity.as_ref().map(ConnectionActivity::begin);
         mark_sensitive_headers(request.headers_mut(), self.session_cookie.as_ref());
         let request_head_len = canonical_request_head_len(&request);
@@ -562,22 +698,34 @@ impl IngressService {
         };
         let (request, control) = middleware_request(request, parts.version);
         let routes = self.routes.clone();
+        let stream_slot = Rc::new(RefCell::new(None));
+        let dispatch_stream_slot = stream_slot.clone();
         let response =
             AssertUnwindSafe(middleware::run(&self.middleware, request, move |request| {
                 let request = restore_inbound_request(request, control);
+                let stream_slot = dispatch_stream_slot.clone();
                 async move {
-                    match request {
-                        Ok(request) => dispatch_response(routes.dispatch(request).await)
-                            .into_middleware_response(),
-                        Err(rejection) => request_rejection(rejection).into_middleware_response(),
-                    }
+                    let response = match request {
+                        Ok(request) => dispatch_response(routes.dispatch(request).await),
+                        Err(rejection) => request_rejection(rejection),
+                    };
+                    let (response, stream) = response.into_middleware_response();
+                    *stream_slot.borrow_mut() = stream;
+                    response
                 }
             }))
             .catch_unwind()
             .await
             .ok()
             .and_then(Result::ok)
-            .map_or_else(unavailable, IngressResponse::from_middleware_response);
+            .map_or_else(unavailable, |response| {
+                let response = IngressResponse::from_middleware_response(response);
+                let stream = stream_slot.borrow_mut().take();
+                match stream {
+                    Some(stream) => response.with_stream(stream),
+                    None => response,
+                }
+            });
         drop(cancel_on_drop);
         response
     }
@@ -729,9 +877,10 @@ async fn collect_bounded_body(
     })
 }
 
-fn dispatch_response(result: Result<HandleResponse, DispatchError>) -> IngressResponse {
+fn dispatch_response(result: Result<DispatchResponse, DispatchError>) -> IngressResponse {
     match result {
-        Ok(response) => from_endpoint(response),
+        Ok(DispatchResponse::Buffered(response)) => from_endpoint(response),
+        Ok(DispatchResponse::Streaming(response)) => from_stream_endpoint(response),
         Err(DispatchError::NotFound) => {
             IngressResponse::json(StatusCode::NOT_FOUND, r#"{"error":"not_found"}"#)
         }
@@ -744,6 +893,37 @@ fn dispatch_response(result: Result<HandleResponse, DispatchError>) -> IngressRe
             r#"{"error":"endpoint_timeout"}"#,
         ),
         Err(DispatchError::Unavailable) => unavailable(),
+    }
+}
+
+fn from_stream_endpoint(response: crate::routing::StreamingResponse) -> IngressResponse {
+    let Some(status) = u16::try_from(response.status)
+        .ok()
+        .and_then(|status| StatusCode::from_u16(status).ok())
+    else {
+        response.stream.cancel();
+        return invalid_endpoint_response();
+    };
+    let mut headers = HeaderMap::with_capacity(response.headers.len());
+    for header in response.headers {
+        let Ok(name) = HeaderName::from_bytes(header.name.as_bytes()) else {
+            response.stream.cancel();
+            return invalid_endpoint_response();
+        };
+        if is_ingress_owned_response_header(&name) {
+            response.stream.cancel();
+            return invalid_endpoint_response();
+        }
+        let Ok(value) = HeaderValue::from_str(&header.value) else {
+            response.stream.cancel();
+            return invalid_endpoint_response();
+        };
+        headers.append(name, value);
+    }
+    IngressResponse {
+        status,
+        headers,
+        body: IngressBody::Streaming(response.stream),
     }
 }
 
@@ -901,7 +1081,7 @@ fn from_endpoint(response: HandleResponse) -> IngressResponse {
     IngressResponse {
         status,
         headers,
-        body,
+        body: IngressBody::Buffered(body),
     }
 }
 
@@ -925,9 +1105,9 @@ const fn version_len(_version: Version) -> usize {
 }
 
 fn with_transport_headers(
-    mut response: Response<Full<Bytes>>,
+    mut response: Response<ResponseBody>,
     request_id: HeaderValue,
-) -> Response<Full<Bytes>> {
+) -> Response<ResponseBody> {
     response
         .headers_mut()
         .insert(REQUEST_ID_HEADER.clone(), request_id);

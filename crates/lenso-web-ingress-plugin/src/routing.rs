@@ -6,9 +6,12 @@ use lenso::prelude::ManyPort;
 use lenso_capability_http_endpoint::{
     DescribeRequest, EndpointClient, EndpointDescribeInvocationError,
     EndpointHandleInvocationError, HandleRequest, HandleRequestCredential,
-    HandleRequestHeadersItem, HandleRequestPathParametersItem, HandleResponse,
+    HandleRequestHeadersItem, HandleRequestPathParametersItem,
 };
-use lenso_kernel::{CancellationToken, PluginDependencies, RuntimeFailure};
+use lenso_capability_http_stream_endpoint as stream_endpoint;
+use lenso_kernel::{
+    CancellationToken, NativeStream, PluginDependencies, RuntimeFailure, StreamEvent,
+};
 use matchit::Router;
 
 use crate::{
@@ -17,9 +20,15 @@ use crate::{
 };
 
 #[derive(Debug)]
+enum RouteProvider {
+    Buffered(usize),
+    Streaming(usize),
+}
+
+#[derive(Debug)]
 struct RouteTarget {
     route_id: String,
-    provider_index: usize,
+    provider: RouteProvider,
 }
 
 #[derive(Debug)]
@@ -27,6 +36,7 @@ pub(super) struct RouteTable {
     dependencies: PluginDependencies,
     diagnostics: Rc<dyn WebIngressDiagnostics>,
     providers: ManyPort<EndpointClient>,
+    stream_providers: ManyPort<stream_endpoint::StreamEndpointClient>,
     methods: HashMap<Method, Router<RouteTarget>>,
     manifest: WebIngressRouteManifest,
     request_timeout: Duration,
@@ -41,9 +51,24 @@ pub(super) enum DispatchError {
     Unavailable,
 }
 
+#[derive(Debug)]
+pub(super) struct StreamingResponse {
+    pub(super) headers: Vec<stream_endpoint::HandleResponseHeadersItem>,
+    pub(super) status: i64,
+    pub(super) stream: NativeStream<stream_endpoint::StreamEndpointHandle>,
+}
+
+#[derive(Debug)]
+pub(super) enum DispatchResponse {
+    Buffered(lenso_capability_http_endpoint::HandleResponse),
+    Streaming(StreamingResponse),
+}
+
 impl RouteTable {
+    #[allow(clippy::too_many_lines)] // Resolves both capability manifests as one collision domain.
     pub(super) async fn resolve(
         providers: ManyPort<EndpointClient>,
+        stream_providers: ManyPort<stream_endpoint::StreamEndpointClient>,
         dependencies: &PluginDependencies,
         request_timeout: Duration,
         diagnostics: Rc<dyn WebIngressDiagnostics>,
@@ -87,7 +112,57 @@ impl RouteTable {
                         route.path.clone(),
                         RouteTarget {
                             route_id: route.route_id,
-                            provider_index,
+                            provider: RouteProvider::Buffered(provider_index),
+                        },
+                    )
+                    .map_err(|error| {
+                        plugin_failure(format!(
+                            "HTTP route collision for {method} {}: {error}",
+                            route.path
+                        ))
+                    })?;
+            }
+        }
+        for (provider_index, provider) in stream_providers.iter().enumerate() {
+            let description = provider
+                .describe_stream(stream_endpoint::DescribeRequest {})
+                .await
+                .map_err(|error| match error {
+                    stream_endpoint::StreamEndpointDescribeInvocationError::Domain(error) => {
+                        plugin_failure(format!(
+                            "streaming HTTP Endpoint provider {provider_index} rejected its description: {error:?}"
+                        ))
+                    }
+                    stream_endpoint::StreamEndpointDescribeInvocationError::Runtime(error) => error,
+                })?;
+            for route in description.routes {
+                let method = route.method.trim().to_ascii_uppercase();
+                let Ok(method) = Method::from_bytes(method.as_bytes()) else {
+                    return Err(plugin_failure(format!(
+                        "streaming HTTP Endpoint provider {provider_index} declared an invalid route"
+                    )));
+                };
+                if route.route_id.trim().is_empty()
+                    || !route.path.starts_with('/')
+                    || route.path.contains(['?', '#'])
+                {
+                    return Err(plugin_failure(format!(
+                        "streaming HTTP Endpoint provider {provider_index} declared an invalid route"
+                    )));
+                }
+                manifest.push(WebIngressRoute::new(
+                    method.as_str(),
+                    &route.path,
+                    &route.route_id,
+                ));
+                methods
+                    .entry(method.clone())
+                    .or_default()
+                    .insert(
+                        route.path.clone(),
+                        RouteTarget {
+                            route_id: route.route_id,
+                            provider: RouteProvider::Streaming(provider_index),
                         },
                     )
                     .map_err(|error| {
@@ -107,6 +182,7 @@ impl RouteTable {
             dependencies: dependencies.clone(),
             diagnostics,
             providers,
+            stream_providers,
             manifest: WebIngressRouteManifest::new(manifest),
             methods,
             request_timeout,
@@ -117,10 +193,11 @@ impl RouteTable {
         &self.manifest
     }
 
+    #[allow(clippy::too_many_lines)] // Keeps shared cancellation around both endpoint interactions.
     pub(super) async fn dispatch(
         &self,
         request: InboundRequest,
-    ) -> Result<HandleResponse, DispatchError> {
+    ) -> Result<DispatchResponse, DispatchError> {
         let Some(router) = self.methods.get(&request.method) else {
             let allowed = self.allowed_methods(&request.path);
             return if allowed.is_empty() {
@@ -145,7 +222,10 @@ impl RouteTable {
             })
             .collect();
         let route_id = matched.value.route_id.clone();
-        let provider_index = matched.value.provider_index;
+        let provider = &matched.value.provider;
+        let provider_index = match provider {
+            RouteProvider::Buffered(index) | RouteProvider::Streaming(index) => *index,
+        };
         let request_id = request.request_id.clone();
         let cancellation = CancellationToken::new();
         let context = self
@@ -163,51 +243,158 @@ impl RouteTable {
                 () = app_cancellation.cancelled() => {}
             }
         };
-        let invocation = self.providers[provider_index].handle_with_context(
-            context,
-            HandleRequest {
-                body: request.body.into(),
-                credential: request
-                    .credential
-                    .map(|credential| HandleRequestCredential {
-                        scheme: credential.scheme,
-                        value: credential.value,
-                    }),
-                headers: request
-                    .headers
-                    .into_iter()
-                    .map(|header| HandleRequestHeadersItem {
-                        name: header.name,
-                        value: header.value,
-                    })
-                    .collect(),
-                method: request.method.as_str().to_owned(),
-                path: request.path,
-                path_parameters,
-                query: request.query,
-                request_id: request_id.clone(),
-                route_id: route_id.clone(),
-            },
-        );
+        let credential = request
+            .credential
+            .map(|credential| (credential.scheme, credential.value));
+        let headers = request
+            .headers
+            .into_iter()
+            .map(|header| (header.name, header.value))
+            .collect::<Vec<_>>();
+        let method = request.method.as_str().to_owned();
+        let path = request.path;
+        let query = request.query;
+        let body = request.body;
+        let invocation = async {
+            match provider {
+                RouteProvider::Buffered(provider_index) => {
+                    let response = self.providers[*provider_index]
+                        .handle_with_context(
+                            context,
+                            HandleRequest {
+                                body: body.into(),
+                                credential: credential.map(|(scheme, value)| {
+                                    HandleRequestCredential { scheme, value }
+                                }),
+                                headers: headers
+                                    .into_iter()
+                                    .map(|(name, value)| HandleRequestHeadersItem { name, value })
+                                    .collect(),
+                                method,
+                                path,
+                                path_parameters,
+                                query,
+                                request_id: request_id.clone(),
+                                route_id: route_id.clone(),
+                            },
+                        )
+                        .await
+                        .map(DispatchResponse::Buffered)
+                        .map_err(|error| match error {
+                            EndpointHandleInvocationError::Domain(_) => DispatchError::Rejected,
+                            EndpointHandleInvocationError::Runtime(failure) => self
+                                .runtime_dispatch_error(
+                                    &request_id,
+                                    &route_id,
+                                    *provider_index,
+                                    &failure,
+                                ),
+                        })?;
+                    Ok(response)
+                }
+                RouteProvider::Streaming(provider_index) => {
+                    let stream = self.stream_providers[*provider_index]
+                        .handle_stream_with_context(
+                            context,
+                            stream_endpoint::HandleRequest {
+                                body: body.into(),
+                                credential: credential.map(|(scheme, value)| {
+                                    stream_endpoint::HandleRequestCredential { scheme, value }
+                                }),
+                                headers: headers
+                                    .into_iter()
+                                    .map(|(name, value)| {
+                                        stream_endpoint::HandleRequestHeadersItem { name, value }
+                                    })
+                                    .collect(),
+                                method,
+                                path,
+                                path_parameters: path_parameters
+                                    .into_iter()
+                                    .map(|parameter| {
+                                        stream_endpoint::HandleRequestPathParametersItem {
+                                            name: parameter.name,
+                                            value: parameter.value,
+                                        }
+                                    })
+                                    .collect(),
+                                query,
+                                request_id: request_id.clone(),
+                                route_id: route_id.clone(),
+                            },
+                        )
+                        .await
+                        .map_err(|error| match error {
+                            stream_endpoint::StreamEndpointHandleInvocationError::Domain(_) => {
+                                DispatchError::Rejected
+                            }
+                            stream_endpoint::StreamEndpointHandleInvocationError::Runtime(
+                                failure,
+                            ) => self.runtime_dispatch_error(
+                                &request_id,
+                                &route_id,
+                                *provider_index,
+                                &failure,
+                            ),
+                        })?;
+                    let head = loop {
+                        match stream.receive().await.map_err(|failure| {
+                            self.runtime_dispatch_error(
+                                &request_id,
+                                &route_id,
+                                *provider_index,
+                                &failure,
+                            )
+                        })? {
+                            StreamEvent::Message(frame)
+                                if frame.kind == stream_endpoint::HandleResponseKind::Head =>
+                            {
+                                break frame;
+                            }
+                            StreamEvent::PeerHalfClosed => {}
+                            StreamEvent::Message(_) | StreamEvent::Terminal(_) => {
+                                stream.cancel();
+                                return Err(DispatchError::Rejected);
+                            }
+                        }
+                    };
+                    let (Some(status), Some(headers), None) =
+                        (head.status, head.headers, head.body)
+                    else {
+                        stream.cancel();
+                        return Err(DispatchError::Rejected);
+                    };
+                    Ok(DispatchResponse::Streaming(StreamingResponse {
+                        headers,
+                        status,
+                        stream,
+                    }))
+                }
+            }
+        };
         futures::pin_mut!(invocation, cancelled);
-        let outcome = match select(invocation, cancelled).await {
+        match select(invocation, cancelled).await {
             Either::Left((outcome, _)) => outcome,
             Either::Right(((), invocation)) => {
                 cancellation.cancel();
                 invocation.await
             }
-        };
-        outcome.map_err(|error| match error {
-            EndpointHandleInvocationError::Domain(_) => DispatchError::Rejected,
-            EndpointHandleInvocationError::Runtime(failure) => {
-                self.observe_failure(&request_id, &route_id, provider_index, &failure);
-                if matches!(failure, RuntimeFailure::DeadlineExceeded { .. }) {
-                    DispatchError::TimedOut
-                } else {
-                    DispatchError::Unavailable
-                }
-            }
-        })
+        }
+    }
+
+    fn runtime_dispatch_error(
+        &self,
+        request_id: &str,
+        route_id: &str,
+        provider_index: usize,
+        failure: &RuntimeFailure,
+    ) -> DispatchError {
+        self.observe_failure(request_id, route_id, provider_index, failure);
+        if matches!(failure, RuntimeFailure::DeadlineExceeded { .. }) {
+            DispatchError::TimedOut
+        } else {
+            DispatchError::Unavailable
+        }
     }
 
     fn observe_failure(
