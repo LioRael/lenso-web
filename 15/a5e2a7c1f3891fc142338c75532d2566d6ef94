@@ -1,0 +1,87 @@
+.github/workflows/ci.yml
+  s_3724267b9ee00e::t_46b1cda50de38a 39-44
+Cargo.lock
+  s_3724267b9ee00e::t_2b7b219a17c6ee 1098,1102,1114-1116,1255-1266,1288
+Cargo.toml
+  s_3724267b9ee00e::t_6d63dd2d5c6a39 15
+README.md
+  s_3724267b9ee00e::t_843cd69139a634 518-532
+crates/lenso-http-egress-plugin/Cargo.toml
+  s_3724267b9ee00e::t_6ecdd1e6832fd9 15-19,21-23,31,34-39
+crates/lenso-http-egress-plugin/js/event-fetch.mjs
+  s_3724267b9ee00e::t_0fbc1bd0d0a2c3 1-93
+crates/lenso-http-egress-plugin/js/event-fetch.test.mjs
+  s_3724267b9ee00e::t_b131b101ffef02 1-69
+crates/lenso-http-egress-plugin/src/config.rs
+  s_3724267b9ee00e::t_eca259ca4254f5 4
+crates/lenso-http-egress-plugin/src/event.rs
+  s_3724267b9ee00e::t_d793be11ed8365 1-222
+crates/lenso-http-egress-plugin/src/lib.rs
+  s_3724267b9ee00e::t_d7337792b729e8 1,3-7,9-10,13-23
+crates/lenso-http-egress-plugin/src/native.rs
+  s_3724267b9ee00e::t_4a5e2b6d444420 1-95
+crates/lenso-http-egress-plugin/src/policy.rs
+  s_3724267b9ee00e::t_521aec89f522a6 1-142
+crates/lenso-http-egress-plugin/src/provider.rs
+  s_3724267b9ee00e::t_84631b7a72459d 7,12-13,59
+crates/lenso-http-egress-plugin/src/workers.rs
+  s_3724267b9ee00e::t_326af944fb4162 1-185
+crates/lenso-http-egress-plugin/tests/http_egress.rs
+  s_3724267b9ee00e::t_2672720f145031 341-599
+crates/lenso-web-ingress-plugin/Cargo.toml
+  s_3724267b9ee00e::t_de4bf0057102f9 16-19,24-26,36,39
+crates/lenso-web-ingress-plugin/src/config.rs
+  s_3724267b9ee00e::t_b2a7357fc7e547 224,229-230,234-235,252,257,262-263,267,276
+crates/lenso-web-ingress-plugin/src/event.rs
+  s_3724267b9ee00e::t_ce7f8b592915cd 1-266
+crates/lenso-web-ingress-plugin/src/ingress.rs
+  s_3724267b9ee00e::t_ad074016248b98 1-710
+crates/lenso-web-ingress-plugin/src/lib.rs
+  s_3724267b9ee00e::t_a0a77997f14203 1,4-6,8-10,13,19-22,26-29,33,35-39,41-48
+crates/lenso-web-ingress-plugin/src/manifest.rs
+  s_3724267b9ee00e::t_a829aeff41d7b0 1-58
+crates/lenso-web-ingress-plugin/src/middleware.rs
+  s_3724267b9ee00e::t_7f469638db001b 50
+crates/lenso-web-ingress-plugin/src/native.rs
+  s_3724267b9ee00e::t_f063213508630a 1-271
+crates/lenso-web-ingress-plugin/src/replication.rs
+  s_3724267b9ee00e::t_5f675d9e37349b 17,395,399-400
+crates/lenso-web-ingress-plugin/src/routing.rs
+  s_3724267b9ee00e::t_3151353927aaad 19
+crates/lenso-web-ingress-plugin/src/server.rs
+  s_3724267b9ee00e::t_99a909b0c0437c 1-4,6-10,12-14,26-34,36,434,465-468,503-504,508-511,571,573
+crates/lenso-web-ingress-plugin/src/session_cookie.rs
+  s_3724267b9ee00e::t_8ecae36774ea5a 86-95
+crates/lenso-web-ingress-plugin/tests/http_ingress.rs
+  s_3724267b9ee00e::t_09181a63038909 1755-1841
+crates/lenso-web-ingress-plugin/tests/http_parity.rs
+  s_3724267b9ee00e::t_da63ce7dbc6ef3 1-267
+crates/lenso-web-ingress-plugin/tests/http_streaming.rs
+  s_3724267b9ee00e::t_bfae516cfdfb60 266-285
+docs/design/event-http-egress.md
+  s_3724267b9ee00e::t_107056eefb10c0 1-105
+docs/design/event-http-ingress.md
+  s_3724267b9ee00e::t_2439cf9b46809d 1-80
+tests/fixtures/http-parity-plugin/Cargo.toml
+  s_3724267b9ee00e::t_5701b3bd70111b 1-13
+tests/fixtures/http-parity-plugin/corpus.json
+  s_3724267b9ee00e::t_ed4c282a1b7d22 1-382
+tests/fixtures/http-parity-plugin/src/lib.rs
+  s_3724267b9ee00e::t_e940a70b08de52 1-143
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "15a5e2a7c1f3891fc142338c75532d2566d6ef94",
+  "prompts": {},
+  "sessions": {
+    "s_3724267b9ee00e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a09863-bdc5-7501-9f17-8276e89fcd6d",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "LioRael <leo@lenso.dev>"
+    }
+  }
+}
