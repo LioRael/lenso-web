@@ -221,15 +221,18 @@ impl WebIngressConfig {
         Ok(())
     }
 
+    #[cfg(feature = "native")]
     pub(crate) const fn bind_address(&self) -> SocketAddr {
         self.bind_address
     }
 
-    pub(crate) const fn max_request_body_bytes(&self) -> usize {
+    /// Maximum bytes an HTTP host may collect before invoking Ingress.
+    pub const fn max_request_body_bytes(&self) -> usize {
         self.max_request_body_bytes
     }
 
-    pub(crate) const fn max_request_head_bytes(&self) -> usize {
+    /// Maximum canonical request-head size accepted by either transport.
+    pub const fn max_request_head_bytes(&self) -> usize {
         self.max_request_head_bytes
     }
 
@@ -246,18 +249,22 @@ impl WebIngressConfig {
         (0, self.max_concurrent_requests)
     }
 
+    #[cfg(feature = "native")]
     pub(crate) const fn max_connections(&self) -> usize {
         self.max_connections
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn request_head_timeout(&self) -> Duration {
         Duration::from_millis(self.request_head_timeout_millis)
     }
 
-    pub(crate) fn request_body_timeout(&self) -> Duration {
+    /// Total body-read deadline the transport host must enforce.
+    pub fn request_body_timeout(&self) -> Duration {
         Duration::from_millis(self.request_body_timeout_millis)
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn connection_idle_timeout(&self) -> Duration {
         Duration::from_millis(self.connection_idle_timeout_millis)
     }
@@ -266,6 +273,7 @@ impl WebIngressConfig {
         Duration::from_millis(self.request_timeout_millis)
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn shutdown_grace_timeout(&self) -> Duration {
         Duration::from_millis(self.shutdown_grace_timeout_millis)
     }

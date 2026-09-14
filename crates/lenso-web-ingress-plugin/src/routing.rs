@@ -16,7 +16,7 @@ use matchit::Router;
 
 use crate::{
     WebIngressDiagnostics, WebIngressEndpointFailure, WebIngressRoute, WebIngressRouteManifest,
-    plugin_failure, server::InboundRequest,
+    ingress::InboundRequest, plugin_failure,
 };
 
 #[derive(Debug)]

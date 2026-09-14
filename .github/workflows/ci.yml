@@ -36,6 +36,12 @@ jobs:
             cargo check --locked --manifest-path crates/lenso-capability-http-stream-endpoint/Cargo.toml --target "$target"
             cargo check --locked --manifest-path crates/lenso-http-auth/Cargo.toml --target "$target"
           done
+      - name: Check event HTTP ingress
+        run: cargo check --locked -p lenso-web-ingress-plugin --no-default-features --target wasm32-unknown-unknown
+      - name: Check event HTTP Egress
+        run: cargo check --locked -p lenso-http-egress-plugin --no-default-features --features workers --target wasm32-unknown-unknown
+      - name: Check event Fetch bridge
+        run: node --test crates/lenso-http-egress-plugin/js/event-fetch.test.mjs
       - name: Package Capability crates
         run: |
           cargo package --locked --manifest-path crates/lenso-capability-http-client/Cargo.toml

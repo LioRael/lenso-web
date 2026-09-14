@@ -1752,3 +1752,90 @@ async fn request(
         body: body.to_owned(),
     }
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn event_ingress_uses_shared_route_conflict_detection() {
+    LocalSet::new()
+        .run_until(async {
+            let ingress = lenso_web_ingress_plugin::WebIngressEventFactory::new();
+            let error = Kernel::start_native(
+                project(&[
+                    ProviderPlan::new("orders-http", ORDERS_PACKAGE_ID),
+                    ProviderPlan::new("status-http", STATUS_PACKAGE_ID),
+                ]),
+                TokioDriver::new(),
+                NativePluginRegistry::new()
+                    .with_factory(FixtureEndpointFactory::new(
+                        ORDERS_PACKAGE_ID,
+                        [("first", "GET", "/orders/{id}")],
+                    ))
+                    .with_factory(FixtureEndpointFactory::new(
+                        STATUS_PACKAGE_ID,
+                        [("second", "GET", "/orders/{other}")],
+                    ))
+                    .with_factory(ingress.clone()),
+            )
+            .await
+            .expect_err("event route conflicts must fail before Ready");
+            assert!(format!("{error:?}").contains("HTTP route collision"));
+            assert!(ingress.route_manifest().is_none());
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn event_middleware_snapshot_preserves_credentials_and_request_identity() {
+    LocalSet::new()
+        .run_until(Box::pin(async {
+            let endpoint = FixtureEndpointFactory::new(
+                ORDERS_PACKAGE_ID,
+                [("orders.read", "GET", "/orders/{order_id}")],
+            );
+            let middleware = GlobalMiddleware::default();
+            let events = middleware.events.clone();
+            let ingress =
+                lenso_web_ingress_plugin::WebIngressEventFactory::new().with_middleware(middleware);
+            let app = Kernel::start_native(
+                project(&[ProviderPlan::new("orders-http", ORDERS_PACKAGE_ID)]),
+                TokioDriver::new(),
+                NativePluginRegistry::new()
+                    .with_factory(endpoint.clone())
+                    .with_factory(ingress.clone()),
+            )
+            .await
+            .unwrap();
+            let later_layer = GlobalMiddleware::default();
+            let later_events = later_layer.events.clone();
+            let changed_handle = ingress.with_middleware(later_layer);
+            let response = changed_handle
+                .handle(
+                    http::Request::builder()
+                        .uri("/orders/42")
+                        .header("authorization", "Bearer alice")
+                        .body(bytes::Bytes::new())
+                        .unwrap(),
+                    lenso_kernel::CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            assert_eq!(response.headers()["x-global-after"], "present");
+            assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+            assert_ne!(response.headers()["x-request-id"], "middleware-controlled");
+            let request = endpoint.observed().unwrap();
+            assert_eq!(request.credential.unwrap().value, "alice");
+            assert!(
+                request
+                    .headers
+                    .iter()
+                    .all(|header| header.name != "authorization" && header.name != "x-request-id")
+            );
+            assert_eq!(*events.borrow(), ["before:/orders/42", "after:/orders/42"]);
+            assert!(later_events.borrow().is_empty());
+            assert_eq!(
+                app.shutdown(Duration::from_secs(1)).await,
+                ShutdownOutcome::Clean
+            );
+        }))
+        .await;
+}

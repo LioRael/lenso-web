@@ -338,3 +338,262 @@ async fn spawn_http2_upstream() -> (std::net::SocketAddr, JoinHandle<()>) {
     });
     (address, task)
 }
+
+#[derive(Clone, Debug, Default)]
+struct RecordingEventTransport {
+    calls: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+    dropped: std::rc::Rc<std::cell::Cell<bool>>,
+}
+impl lenso_http_egress_plugin::HttpEventTransport for RecordingEventTransport {
+    fn send(
+        &self,
+        input: lenso_http_egress_plugin::HttpEventRequest,
+    ) -> futures::future::LocalBoxFuture<
+        'static,
+        Result<http::Response<bytes::Bytes>, lenso_http_egress_plugin::HttpEventError>,
+    > {
+        self.calls
+            .borrow_mut()
+            .push(input.request.uri().to_string());
+        let dropped = self.dropped.clone();
+        Box::pin(async move {
+            if input.request.uri().path() == "/pending" {
+                struct Flag(std::rc::Rc<std::cell::Cell<bool>>);
+                impl Drop for Flag {
+                    fn drop(&mut self) {
+                        self.0.set(true);
+                    }
+                }
+                let _flag = Flag(dropped);
+                return futures::future::pending().await;
+            }
+            if input.request.uri().path() == "/timeout" {
+                return Err(lenso_http_egress_plugin::HttpEventError::Timeout);
+            }
+            if input.request.uri().path() == "/large" {
+                return Ok(http::Response::new(bytes::Bytes::from(vec![0; 33])));
+            }
+            let status = if input.request.uri().path() == "/redirect" {
+                307
+            } else {
+                200
+            };
+            Ok(http::Response::builder()
+                .status(status)
+                .header("location", "https://blocked.test/")
+                .header("set-cookie", "session=a; Secure; HttpOnly")
+                .header("set-cookie", "other=b; Secure")
+                .header("connection", "x-private")
+                .header("x-private", "hidden")
+                .body(input.request.into_body())
+                .unwrap())
+        })
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[allow(clippy::too_many_lines)] // One immutable App exercises the transport policy matrix.
+async fn event_egress_shares_exact_origin_and_response_policy() {
+    tokio::task::LocalSet::new()
+        .run_until(Box::pin(async {
+            let config = HttpEgressConfig::new(["https://allowed.test"])
+                .unwrap()
+                .with_timeouts(Duration::from_secs(1), Duration::from_secs(1))
+                .unwrap()
+                .with_transfer_limits(32, 512, 32, 512)
+                .unwrap();
+            let transport = RecordingEventTransport::default();
+            let app = Kernel::start_native(
+                plan(&config),
+                TokioDriver::new(),
+                NativePluginRegistry::new()
+                    .with_factory(CallerFactory)
+                    .with_factory(lenso_http_egress_plugin::HttpEgressEventFactory::new(
+                        transport.clone(),
+                    )),
+            )
+            .await
+            .unwrap();
+            for url in [
+                "https://blocked.test/",
+                "https://allowed.test.evil/",
+                "http://allowed.test/",
+                "https://allowed.test:444/",
+            ] {
+                assert_eq!(
+                    app.invoke::<Client>("caller", SEND_OPERATION, request("GET", url, &[], b""))
+                        .await
+                        .unwrap(),
+                    Err(SendError::DestinationNotAllowed)
+                );
+            }
+            for invalid in [
+                request("CONNECT", "https://allowed.test/", &[], b""),
+                request("GET", "https://user:password@allowed.test/", &[], b""),
+                request(
+                    "GET",
+                    "https://allowed.test/",
+                    &[new_header("host", "blocked.test")],
+                    b"",
+                ),
+            ] {
+                assert_eq!(
+                    app.invoke::<Client>("caller", SEND_OPERATION, invalid)
+                        .await
+                        .unwrap(),
+                    Err(SendError::InvalidRequest)
+                );
+            }
+            assert!(
+                transport.calls.borrow().is_empty(),
+                "invalid authority must not call the host bridge"
+            );
+            let binary = app
+                .invoke::<Client>(
+                    "caller",
+                    SEND_OPERATION,
+                    request("POST", "https://allowed.test/echo", &[], &[0, 255, 128]),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(binary.body.as_slice(), &[0, 255, 128]);
+            assert_eq!(
+                binary
+                    .headers
+                    .iter()
+                    .filter(|header| header.name == "set-cookie")
+                    .count(),
+                2
+            );
+            assert!(
+                !binary
+                    .headers
+                    .iter()
+                    .any(|header| header.name == "connection" || header.name == "x-private")
+            );
+            let redirect = app
+                .invoke::<Client>(
+                    "caller",
+                    SEND_OPERATION,
+                    request("GET", "https://allowed.test/redirect", &[], b""),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(redirect.status, 307);
+            assert_eq!(
+                transport.calls.borrow().len(),
+                2,
+                "no implicit redirect or retry"
+            );
+            assert_eq!(
+                app.invoke::<Client>(
+                    "caller",
+                    SEND_OPERATION,
+                    request("POST", "https://allowed.test/", &[], &[0; 33])
+                )
+                .await
+                .unwrap(),
+                Err(SendError::RequestTooLarge)
+            );
+            assert_eq!(
+                app.invoke::<Client>(
+                    "caller",
+                    SEND_OPERATION,
+                    request("GET", "https://allowed.test/large", &[], b"")
+                )
+                .await
+                .unwrap(),
+                Err(SendError::ResponseTooLarge)
+            );
+            assert_eq!(
+                app.invoke::<Client>(
+                    "caller",
+                    SEND_OPERATION,
+                    request("GET", "https://allowed.test/timeout", &[], b"")
+                )
+                .await
+                .unwrap(),
+                Err(SendError::Timeout)
+            );
+            assert_eq!(
+                app.shutdown(Duration::from_secs(1)).await,
+                ShutdownOutcome::Clean
+            );
+        }))
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn event_egress_cancelled_invocation_drops_its_host_future() {
+    tokio::task::LocalSet::new()
+        .run_until(Box::pin(async {
+            let config = HttpEgressConfig::new(["https://allowed.test"])
+                .unwrap()
+                .with_timeouts(Duration::from_secs(1), Duration::from_secs(1))
+                .unwrap();
+            let transport = RecordingEventTransport::default();
+            let app = Kernel::start_native(
+                plan(&config),
+                TokioDriver::new(),
+                NativePluginRegistry::new()
+                    .with_factory(CallerFactory)
+                    .with_factory(lenso_http_egress_plugin::HttpEgressEventFactory::new(
+                        transport.clone(),
+                    )),
+            )
+            .await
+            .unwrap();
+            let token = lenso_kernel::CancellationToken::new();
+            let call = app.invoke_with_context::<Client>(
+                "caller",
+                SEND_OPERATION,
+                lenso_kernel::InvocationContext::new(200, None, token.clone()),
+                request("GET", "https://allowed.test/pending", &[], b""),
+            );
+            let cancel = async {
+                tokio::task::yield_now().await;
+                token.cancel();
+            };
+            let (result, ()) = futures::join!(call, cancel);
+            assert!(matches!(result, Err(RuntimeFailure::Cancelled { .. })));
+            assert!(transport.dropped.get());
+            assert_eq!(
+                app.shutdown(Duration::from_secs(1)).await,
+                ShutdownOutcome::Clean
+            );
+        }))
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn event_egress_rejects_unavailable_transport_policies_at_startup() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let config = HttpEgressConfig::new(["https://allowed.test"]).unwrap();
+            for config in [
+                config.clone(),
+                config
+                    .with_timeouts(Duration::from_secs(1), Duration::from_secs(1))
+                    .unwrap()
+                    .with_http_version(HttpVersionPolicy::Http1Only),
+            ] {
+                let result = Kernel::start_native(
+                    plan(&config),
+                    TokioDriver::new(),
+                    NativePluginRegistry::new()
+                        .with_factory(CallerFactory)
+                        .with_factory(lenso_http_egress_plugin::HttpEgressEventFactory::new(
+                            RecordingEventTransport::default(),
+                        )),
+                )
+                .await;
+                assert!(matches!(
+                    result,
+                    Err(RuntimeFailure::InvalidResolvedPlan { .. })
+                ));
+            }
+        })
+        .await;
+}

@@ -4,29 +4,13 @@ use bytes::{Bytes, BytesMut};
 use futures::{FutureExt as _, future::Either};
 use lenso_capability_http_client::{
     Client as ClientSend, ClientInvocationError, ClientProvider, SendError, SendRequest,
-    SendResponse, SendResponseHeadersItem,
+    SendResponse,
 };
 use lenso_kernel::{InvocationContext, NativeRequestFuture, RuntimeFailure};
-use reqwest::{
-    Method, Url,
-    header::{HeaderMap, HeaderName, HeaderValue},
-};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::config::{HttpEgressConfig, request_origin};
-
-const FORBIDDEN_REQUEST_HEADERS: &[&str] = &[
-    "connection",
-    "content-length",
-    "host",
-    "keep-alive",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "te",
-    "trailer",
-    "transfer-encoding",
-    "upgrade",
-];
+use crate::config::HttpEgressConfig;
+use crate::policy::{PreparedRequest, prepare_request, response_headers};
 
 #[derive(Clone, Debug)]
 pub(crate) struct HttpEgressProvider {
@@ -72,36 +56,7 @@ impl HttpEgressProvider {
         &self,
         request: SendRequest,
     ) -> Result<PreparedRequest, ClientInvocationError> {
-        if request.method.len() > 32 || request.url.len() > 4_096 {
-            return Err(invalid_request());
-        }
-        let method =
-            Method::from_bytes(request.method.as_bytes()).map_err(|_| invalid_request())?;
-        if matches!(method, Method::CONNECT | Method::TRACE) {
-            return Err(invalid_request());
-        }
-        let url = Url::parse(&request.url).map_err(|_| invalid_request())?;
-        if !url.username().is_empty() || url.password().is_some() || url.fragment().is_some() {
-            return Err(invalid_request());
-        }
-        let origin = request_origin(&url).ok_or_else(invalid_request)?;
-        if !self.allowed_origins.contains(&origin) {
-            return Err(ClientInvocationError::Domain(
-                SendError::DestinationNotAllowed,
-            ));
-        }
-        let body = request.body.into_shared();
-        if body.len() > self.config.max_request_body_bytes() {
-            return Err(ClientInvocationError::Domain(SendError::RequestTooLarge));
-        }
-        let headers =
-            parse_request_headers(&request.headers, self.config.max_request_head_bytes())?;
-        Ok(PreparedRequest {
-            method,
-            url,
-            headers,
-            body,
-        })
+        prepare_request(&self.config, &self.allowed_origins, request)
     }
 
     async fn read_response(
@@ -169,13 +124,6 @@ impl ClientProvider for HttpEgressProvider {
     }
 }
 
-struct PreparedRequest {
-    method: Method,
-    url: Url,
-    headers: HeaderMap,
-    body: Bytes,
-}
-
 async fn read_bounded_body(
     response: &mut reqwest::Response,
     limit: usize,
@@ -217,91 +165,12 @@ async fn read_bounded_body(
     Ok(body.freeze())
 }
 
-fn parse_request_headers(
-    headers: &[lenso_capability_http_client::SendRequestHeadersItem],
-    max_head_bytes: usize,
-) -> Result<HeaderMap, ClientInvocationError> {
-    let mut parsed = HeaderMap::new();
-    let mut head_bytes = 0_usize;
-    for header in headers {
-        let name = HeaderName::from_bytes(header.name.as_bytes()).map_err(|_| invalid_request())?;
-        if FORBIDDEN_REQUEST_HEADERS.contains(&name.as_str()) {
-            return Err(invalid_request());
-        }
-        let value = HeaderValue::from_str(&header.value).map_err(|_| invalid_request())?;
-        head_bytes = head_bytes
-            .checked_add(name.as_str().len() + value.as_bytes().len() + 4)
-            .ok_or_else(request_too_large)?;
-        if head_bytes > max_head_bytes {
-            return Err(request_too_large());
-        }
-        parsed.append(name, value);
-    }
-    Ok(parsed)
-}
-
-fn response_headers(
-    headers: &HeaderMap,
-    max_head_bytes: usize,
-) -> Result<Vec<SendResponseHeadersItem>, ClientInvocationError> {
-    let mut connection_headers = BTreeSet::new();
-    for value in headers.get_all("connection") {
-        let value = value
-            .to_str()
-            .map_err(|_| ClientInvocationError::Domain(SendError::TransportFailure))?;
-        for name in value
-            .split(',')
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-        {
-            let name = HeaderName::from_bytes(name.as_bytes())
-                .map_err(|_| ClientInvocationError::Domain(SendError::TransportFailure))?;
-            connection_headers.insert(name.as_str().to_owned());
-        }
-    }
-    let mut result = Vec::with_capacity(headers.len());
-    let mut head_bytes = 0_usize;
-    for (name, value) in headers {
-        if FORBIDDEN_REQUEST_HEADERS.contains(&name.as_str())
-            || connection_headers.contains(name.as_str())
-        {
-            continue;
-        }
-        head_bytes = head_bytes
-            .checked_add(name.as_str().len() + value.as_bytes().len() + 4)
-            .ok_or_else(response_too_large)?;
-        if head_bytes > max_head_bytes {
-            return Err(response_too_large());
-        }
-        result.push(SendResponseHeadersItem {
-            name: name.as_str().to_owned(),
-            value: value
-                .to_str()
-                .map_err(|_| ClientInvocationError::Domain(SendError::TransportFailure))?
-                .to_owned(),
-        });
-    }
-    Ok(result)
-}
-
 fn classify_transport_error(error: &reqwest::Error) -> ClientInvocationError {
     ClientInvocationError::Domain(if error.is_timeout() {
         SendError::Timeout
     } else {
         SendError::TransportFailure
     })
-}
-
-fn invalid_request() -> ClientInvocationError {
-    ClientInvocationError::Domain(SendError::InvalidRequest)
-}
-
-fn request_too_large() -> ClientInvocationError {
-    ClientInvocationError::Domain(SendError::RequestTooLarge)
-}
-
-fn response_too_large() -> ClientInvocationError {
-    ClientInvocationError::Domain(SendError::ResponseTooLarge)
 }
 
 #[cfg(test)]

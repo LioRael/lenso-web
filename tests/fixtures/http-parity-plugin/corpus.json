@@ -1,0 +1,382 @@
+[
+  {
+    "name": "method-GET",
+    "method": "GET",
+    "uri": "/method",
+    "headers": [],
+    "body": [],
+    "status": 200,
+    "response_body": [
+      71,
+      69,
+      84
+    ]
+  },
+  {
+    "name": "method-POST",
+    "method": "POST",
+    "uri": "/method",
+    "headers": [],
+    "body": [],
+    "status": 200,
+    "response_body": [
+      80,
+      79,
+      83,
+      84
+    ]
+  },
+  {
+    "name": "method-PUT",
+    "method": "PUT",
+    "uri": "/method",
+    "headers": [],
+    "body": [],
+    "status": 200,
+    "response_body": [
+      80,
+      85,
+      84
+    ]
+  },
+  {
+    "name": "method-PATCH",
+    "method": "PATCH",
+    "uri": "/method",
+    "headers": [],
+    "body": [],
+    "status": 200,
+    "response_body": [
+      80,
+      65,
+      84,
+      67,
+      72
+    ]
+  },
+  {
+    "name": "method-DELETE",
+    "method": "DELETE",
+    "uri": "/method",
+    "headers": [],
+    "body": [],
+    "status": 200,
+    "response_body": [
+      68,
+      69,
+      76,
+      69,
+      84,
+      69
+    ]
+  },
+  {
+    "name": "method-OPTIONS",
+    "method": "OPTIONS",
+    "uri": "/method",
+    "headers": [],
+    "body": [],
+    "status": 200,
+    "response_body": [
+      79,
+      80,
+      84,
+      73,
+      79,
+      78,
+      83
+    ]
+  },
+  {
+    "name": "method-HEAD",
+    "method": "HEAD",
+    "uri": "/method",
+    "headers": [],
+    "body": [],
+    "status": 200,
+    "response_body": []
+  },
+  {
+    "name": "method-TRACE",
+    "method": "TRACE",
+    "uri": "/method",
+    "headers": [],
+    "body": [],
+    "status": 200,
+    "response_body": [
+      84,
+      82,
+      65,
+      67,
+      69
+    ]
+  },
+  {
+    "name": "static-precedence",
+    "method": "GET",
+    "uri": "/echo/static",
+    "headers": [],
+    "body": [],
+    "status": 200,
+    "route": "static"
+  },
+  {
+    "name": "raw-query",
+    "method": "GET",
+    "uri": "/echo/a%2Fb?q=one&q=two&empty=&plus=a+b",
+    "headers": [],
+    "body": [],
+    "status": 200,
+    "route": "echo",
+    "path": "/echo/a%2Fb",
+    "query": "q=one&q=two&empty=&plus=a+b"
+  },
+  {
+    "name": "malformed-percent-path",
+    "method": "GET",
+    "uri": "/echo/%ZZ",
+    "headers": [],
+    "body": [],
+    "status": 200,
+    "route": "echo",
+    "path": "/echo/%ZZ"
+  },
+  {
+    "name": "empty-query",
+    "method": "GET",
+    "uri": "/echo/a?",
+    "headers": [],
+    "body": [],
+    "status": 200,
+    "query": ""
+  },
+  {
+    "name": "binary",
+    "method": "POST",
+    "uri": "/bytes",
+    "headers": [],
+    "body": [
+      0,
+      255,
+      128,
+      13,
+      10,
+      1
+    ],
+    "status": 200,
+    "response_body": [
+      0,
+      255,
+      128,
+      13,
+      10,
+      1
+    ]
+  },
+  {
+    "name": "empty-body",
+    "method": "POST",
+    "uri": "/bytes",
+    "headers": [],
+    "body": [],
+    "status": 200,
+    "response_body": []
+  },
+  {
+    "name": "repeated-headers",
+    "method": "GET",
+    "uri": "/echo/a",
+    "headers": [
+      [
+        "X-Test",
+        "one"
+      ],
+      [
+        "x-test",
+        "two"
+      ]
+    ],
+    "body": [],
+    "status": 200
+  },
+  {
+    "name": "bearer",
+    "method": "GET",
+    "uri": "/echo/a",
+    "headers": [
+      [
+        "Authorization",
+        "Bearer alice"
+      ],
+      [
+        "x-request-id",
+        "untrusted"
+      ],
+      [
+        "x-forwarded-user",
+        "forged"
+      ]
+    ],
+    "body": [],
+    "status": 200,
+    "credential": {
+      "scheme": "bearer",
+      "value": "alice"
+    }
+  },
+  {
+    "name": "duplicate-authorization",
+    "method": "GET",
+    "uri": "/echo/a",
+    "headers": [
+      [
+        "Authorization",
+        "Bearer alice"
+      ],
+      [
+        "authorization",
+        "Bearer bob"
+      ]
+    ],
+    "body": [],
+    "status": 400
+  },
+  {
+    "name": "session-cookie",
+    "method": "GET",
+    "uri": "/echo/a",
+    "headers": [
+      [
+        "Cookie",
+        "__Host-session=alice"
+      ]
+    ],
+    "body": [],
+    "status": 200,
+    "credential": {
+      "scheme": "session",
+      "value": "alice"
+    }
+  },
+  {
+    "name": "csrf-missing",
+    "method": "POST",
+    "uri": "/bytes",
+    "headers": [
+      [
+        "Cookie",
+        "__Host-session=alice"
+      ]
+    ],
+    "body": [],
+    "status": 403
+  },
+  {
+    "name": "csrf-valid",
+    "method": "POST",
+    "uri": "/bytes",
+    "headers": [
+      [
+        "Cookie",
+        "__Host-session=alice; __Host-csrf=token"
+      ],
+      [
+        "x-csrf-token",
+        "token"
+      ]
+    ],
+    "body": [],
+    "status": 200,
+    "response_body": []
+  },
+  {
+    "name": "cookies",
+    "method": "GET",
+    "uri": "/cookies",
+    "headers": [],
+    "body": [],
+    "status": 200,
+    "response_body": [],
+    "set_cookie_count": 2
+  },
+  {
+    "name": "head",
+    "method": "HEAD",
+    "uri": "/head",
+    "headers": [],
+    "body": [],
+    "status": 200,
+    "response_body": []
+  },
+  {
+    "name": "no-content",
+    "method": "GET",
+    "uri": "/no-content",
+    "headers": [],
+    "body": [],
+    "status": 204,
+    "response_body": []
+  },
+  {
+    "name": "not-modified",
+    "method": "GET",
+    "uri": "/not-modified",
+    "headers": [],
+    "body": [],
+    "status": 304,
+    "response_body": []
+  },
+  {
+    "name": "not-found",
+    "method": "GET",
+    "uri": "/absent",
+    "headers": [],
+    "body": [],
+    "status": 404
+  },
+  {
+    "name": "method-not-allowed",
+    "method": "GET",
+    "uri": "/bytes",
+    "headers": [],
+    "body": [],
+    "status": 405
+  },
+  {
+    "name": "domain",
+    "method": "GET",
+    "uri": "/reject",
+    "headers": [],
+    "body": [],
+    "status": 502
+  },
+  {
+    "name": "runtime",
+    "method": "GET",
+    "uri": "/failure",
+    "headers": [],
+    "body": [],
+    "status": 503
+  },
+  {
+    "name": "invalid-response",
+    "method": "GET",
+    "uri": "/invalid",
+    "headers": [],
+    "body": [],
+    "status": 502
+  },
+  {
+    "name": "folded-authorization",
+    "method": "GET",
+    "uri": "/echo/a",
+    "headers": [
+      [
+        "Authorization",
+        "Bearer alice, Bearer bob"
+      ]
+    ],
+    "body": [],
+    "status": 400
+  }
+]

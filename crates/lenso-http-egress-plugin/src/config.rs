@@ -1,7 +1,7 @@
 use std::{collections::BTreeSet, time::Duration};
 
-use reqwest::Url;
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 const MAX_TRANSFER_BYTES: usize = 64 * 1024 * 1024;
 const MAX_HEAD_BYTES: usize = 1024 * 1024;

@@ -12,6 +12,7 @@ members = [
     "examples/greetings-http-plugin",
     "examples/observe-sample-web-app",
     "tests/fixtures/query-endpoint-plugin",
+    "tests/fixtures/http-parity-plugin",
 ]
 
 [workspace.package]

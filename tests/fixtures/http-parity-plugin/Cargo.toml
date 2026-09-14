@@ -1,0 +1,13 @@
+[package]
+name = "lenso-web-http-parity-fixture"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+futures.workspace = true
+lenso-app-plan.workspace = true
+lenso-capability-http-endpoint = { path = "../../../crates/lenso-capability-http-endpoint" }
+lenso-kernel.workspace = true
+lenso-native-adapter.workspace = true
+serde_json.workspace = true

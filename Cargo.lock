@@ -1095,9 +1095,11 @@ dependencies = [
  "axum",
  "bytes",
  "futures",
+ "http",
  "http-body-util",
  "hyper",
  "hyper-util",
+ "js-sys",
  "lenso",
  "lenso-app-plan",
  "lenso-capability-http-client",
@@ -1109,6 +1111,9 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -1248,6 +1253,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "lenso-web-http-parity-fixture"
+version = "0.0.0"
+dependencies = [
+ "futures",
+ "lenso-app-plan",
+ "lenso-capability-http-endpoint",
+ "lenso-kernel",
+ "lenso-native-adapter",
+ "serde_json",
+]
+
+[[package]]
 name = "lenso-web-ingress-plugin"
 version = "0.4.2"
 dependencies = [
@@ -1268,6 +1285,7 @@ dependencies = [
  "lenso-kernel",
  "lenso-native-adapter",
  "lenso-runner",
+ "lenso-web-http-parity-fixture",
  "lenso-web-query-endpoint-fixture",
  "matchit",
  "serde",

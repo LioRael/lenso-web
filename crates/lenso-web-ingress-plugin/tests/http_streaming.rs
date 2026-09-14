@@ -263,3 +263,23 @@ impl NativeStreamSession for FixtureStream {
         self.cancelled.set(true);
     }
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn event_ingress_rejects_stream_bindings_before_readiness() {
+    LocalSet::new()
+        .run_until(async {
+            let ingress = lenso_web_ingress_plugin::WebIngressEventFactory::new();
+            let error = Kernel::start_native(
+                plan(),
+                TokioDriver::new(),
+                NativePluginRegistry::new()
+                    .with_factory(StreamingEndpointFactory { malformed: false })
+                    .with_factory(ingress.clone()),
+            )
+            .await
+            .expect_err("event hosts must reject streaming before Ready");
+            assert!(format!("{error:?}").contains("does not support Stream Endpoint bindings"));
+            assert!(ingress.route_manifest().is_none());
+        })
+        .await;
+}

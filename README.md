@@ -515,3 +515,18 @@ does not change the portable Kernel or imply live Instance migration.
 
 The checked host-specific sample and its decision are recorded in
 [`docs/evidence/web-execution-profile-2026-08-30.json`](docs/evidence/web-execution-profile-2026-08-30.json).
+
+### Event hosts
+
+`lenso-web-ingress-plugin` also exposes `WebIngressEventFactory` for an event-owned
+App using an event Driver. Disable the default `native` feature to compile the
+shared HTTP path for `wasm32-unknown-unknown`. The event factory uses the same
+Plugin descriptor, Plan-bound generated Endpoint clients, routing, credentials
+and middleware as the native listener. See [the event ingress seam](docs/design/event-http-ingress.md)
+for the host integration contract, buffered-only scope and qualification limits.
+
+`lenso-http-egress-plugin` exposes `HttpEgressEventFactory` for an explicitly
+injected event transport, with a `workers` feature and the Web-owned abortable
+Fetch bridge. It reuses the native exact-origin and transfer policy. See
+[event HTTP Egress](docs/design/event-http-egress.md) for supported configuration,
+per-event injection, cancellation and target qualification requirements.

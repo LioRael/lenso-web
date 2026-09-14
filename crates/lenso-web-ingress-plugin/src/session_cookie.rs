@@ -83,6 +83,16 @@ fn authorization_credential(
     if scheme.is_empty() || value.is_empty() {
         return Err(CredentialRejection::BadRequest);
     }
+    // Fetch-compatible hosts fold duplicate Authorization fields. Token-based
+    // schemes cannot contain commas or whitespace; reject that ambiguity before
+    // it becomes credential evidence. Parameter-based schemes retain their grammar.
+    if (scheme.eq_ignore_ascii_case("bearer") || scheme.eq_ignore_ascii_case("basic"))
+        && value
+            .bytes()
+            .any(|byte| byte == b',' || byte.is_ascii_whitespace())
+    {
+        return Err(CredentialRejection::BadRequest);
+    }
     Ok(Some(CredentialEvidence {
         scheme: scheme.to_ascii_lowercase(),
         value: value.to_owned(),

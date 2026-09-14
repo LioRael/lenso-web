@@ -47,6 +47,7 @@ pub trait WebIngressMiddleware: fmt::Debug {
     }
 }
 
+#[cfg(feature = "native")]
 pub(crate) fn identities(middleware: &[Rc<dyn WebIngressMiddleware>]) -> Vec<String> {
     middleware
         .iter()

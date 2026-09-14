@@ -1,28 +1,17 @@
-use std::{
-    cell::{Cell, RefCell},
-    collections::HashSet,
-    convert::Infallible,
-    future::Future,
-    panic::AssertUnwindSafe,
-    pin::Pin,
-    rc::Rc,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-    task::{Context, Poll},
-    time::Instant,
+use crate::ingress::{
+    IngressBody, IngressResponse, RequestIdSequence, acquire_request_permit, bad_request,
+    canonical_request_head_len, dispatch_buffered, mark_sensitive_headers, payload_too_large,
+    replace_request_id, request_timeout, unavailable, with_transport_headers,
 };
-
+use crate::{
+    WebIngressConfig, WebIngressMiddleware,
+    replication::{ReplicaConnection, ReplicaConnectionSource},
+    routing::RouteTable,
+    session_cookie::SessionCookiePolicy,
+};
 use bytes::{Bytes, BytesMut};
-use futures::{FutureExt as _, StreamExt as _, stream::FuturesUnordered};
-use http::{
-    HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri, Version,
-    header::{
-        ALLOW, AUTHORIZATION, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST, TE, TRAILER,
-        TRANSFER_ENCODING, UPGRADE,
-    },
-};
+use futures::{StreamExt as _, stream::FuturesUnordered};
+use http::{Request, Response, StatusCode, header::CONTENT_LENGTH};
 use http_body_util::{BodyExt as _, Full};
 use hyper::{
     body::{Frame, Incoming},
@@ -32,62 +21,21 @@ use hyper_util::{
     rt::{TokioIo, TokioTimer},
     server::conn::auto,
 };
-use lenso_capability_http_endpoint::HandleResponse;
 use lenso_capability_http_stream_endpoint as stream_endpoint;
 use lenso_kernel::{CancellationToken, NativeStream, StreamEvent};
-use tokio::{
-    net::TcpListener,
-    sync::{Semaphore, oneshot},
+use std::{
+    cell::Cell,
+    convert::Infallible,
+    future::Future,
+    pin::Pin,
+    rc::Rc,
+    sync::Arc,
+    task::{Context, Poll},
+    time::Instant,
 };
+use tokio::{net::TcpListener, sync::Semaphore};
 
-use crate::{
-    WebIngressConfig, WebIngressMiddleware, WebIngressRequest, WebIngressResponse, middleware,
-    replication::{ReplicaConnection, ReplicaConnectionSource},
-    routing::RouteTable,
-    routing::{DispatchError, DispatchResponse},
-    session_cookie::{
-        CredentialEvidence, CredentialRejection, SessionCookiePolicy, select_credential,
-    },
-};
-
-const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
-const NOSNIFF_HEADER: HeaderName = HeaderName::from_static("x-content-type-options");
 const IDLE_CONNECTION_CLOSE_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
-
-#[derive(Debug)]
-pub(super) struct InboundHeader {
-    pub(super) name: String,
-    pub(super) value: String,
-}
-
-#[derive(Debug)]
-pub(super) struct InboundRequest {
-    pub(super) body: Bytes,
-    pub(super) cancellation: CancellationToken,
-    pub(super) credential: Option<CredentialEvidence>,
-    pub(super) disconnected: oneshot::Receiver<()>,
-    csrf_header_name: Option<HeaderName>,
-    pub(super) headers: Vec<InboundHeader>,
-    pub(super) method: Method,
-    pub(super) path: String,
-    pub(super) query: Option<String>,
-    pub(super) request_id: String,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RequestRejection {
-    BadRequest,
-    CsrfForbidden,
-}
-
-impl From<CredentialRejection> for RequestRejection {
-    fn from(value: CredentialRejection) -> Self {
-        match value {
-            CredentialRejection::BadRequest => Self::BadRequest,
-            CredentialRejection::CsrfForbidden => Self::CsrfForbidden,
-        }
-    }
-}
 
 #[derive(Clone, Debug)]
 struct IngressService {
@@ -141,65 +89,6 @@ impl Drop for ActiveRequest {
             self.0.state.idle_since.set(Instant::now());
         }
     }
-}
-
-#[derive(Clone, Debug)]
-enum RequestIdSequence {
-    Local(Rc<Cell<u64>>),
-    Replicated(Arc<AtomicU64>),
-}
-
-impl RequestIdSequence {
-    fn next(&self) -> u64 {
-        match self {
-            Self::Local(next) => {
-                let value = next.get();
-                next.set(value.wrapping_add(1));
-                value
-            }
-            Self::Replicated(next) => next.fetch_add(1, Ordering::Relaxed),
-        }
-    }
-}
-
-#[derive(Debug)]
-struct CancelRequestOnDrop(Option<oneshot::Sender<()>>);
-
-impl Drop for CancelRequestOnDrop {
-    fn drop(&mut self) {
-        if let Some(cancel) = self.0.take() {
-            let _ = cancel.send(());
-        }
-    }
-}
-
-fn request_id_header_value(mut value: u64) -> HeaderValue {
-    let mut buffer = [0_u8; 26];
-    let mut start = buffer.len();
-    loop {
-        start -= 1;
-        buffer[start] = b'0' + (value % 10) as u8;
-        value /= 10;
-        if value == 0 {
-            break;
-        }
-    }
-    start -= b"lenso-".len();
-    buffer[start..start + b"lenso-".len()].copy_from_slice(b"lenso-");
-    HeaderValue::from_bytes(&buffer[start..]).expect("generated request id is a valid header value")
-}
-
-#[derive(Debug)]
-struct IngressResponse {
-    status: StatusCode,
-    headers: HeaderMap,
-    body: IngressBody,
-}
-
-#[derive(Debug)]
-enum IngressBody {
-    Buffered(Bytes),
-    Streaming(NativeStream<stream_endpoint::StreamEndpointHandle>),
 }
 
 #[derive(Debug)]
@@ -309,21 +198,6 @@ impl StreamingBody {
 }
 
 impl IngressResponse {
-    fn json(status: StatusCode, body: &'static str) -> Self {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            CONTENT_TYPE,
-            HeaderValue::from_static("application/json; charset=utf-8"),
-        );
-        Self {
-            status,
-            headers,
-            body: IngressBody::Buffered(Bytes::from_static(body.as_bytes())),
-        }
-    }
-}
-
-impl IngressResponse {
     fn into_response(self) -> Response<ResponseBody> {
         let body = match self.body {
             IngressBody::Buffered(body) => ResponseBody::Buffered(Full::new(body)),
@@ -333,45 +207,6 @@ impl IngressResponse {
         *response.status_mut() = self.status;
         *response.headers_mut() = self.headers;
         response
-    }
-
-    fn into_middleware_response(
-        self,
-    ) -> (
-        WebIngressResponse,
-        Option<NativeStream<stream_endpoint::StreamEndpointHandle>>,
-    ) {
-        let (body, stream) = match self.body {
-            IngressBody::Buffered(body) => (body, None),
-            IngressBody::Streaming(stream) => (Bytes::new(), Some(stream)),
-        };
-        let mut response = Response::new(body);
-        *response.status_mut() = self.status;
-        *response.headers_mut() = self.headers;
-        (response, stream)
-    }
-
-    fn from_middleware_response(response: WebIngressResponse) -> Self {
-        let (parts, body) = response.into_parts();
-        let mut headers = parts.headers;
-        let ingress_owned = headers
-            .keys()
-            .filter(|name| is_ingress_owned_response_header(name))
-            .cloned()
-            .collect::<Vec<_>>();
-        for name in ingress_owned {
-            headers.remove(name);
-        }
-        Self {
-            status: parts.status,
-            headers,
-            body: IngressBody::Buffered(body),
-        }
-    }
-
-    fn with_stream(mut self, stream: NativeStream<stream_endpoint::StreamEndpointHandle>) -> Self {
-        self.body = IngressBody::Streaming(stream);
-        self
     }
 }
 
@@ -591,32 +426,12 @@ async fn wait_for_connection_idle(activity: &ConnectionActivity, timeout: std::t
     }
 }
 
-async fn acquire_request_permit<'a>(
-    semaphore: &'a Semaphore,
-    cancellation: &CancellationToken,
-) -> Option<tokio::sync::SemaphorePermit<'a>> {
-    if cancellation.is_cancelled() {
-        return None;
-    }
-    match semaphore.try_acquire() {
-        Ok(permit) => Some(permit),
-        Err(tokio::sync::TryAcquireError::NoPermits) => tokio::select! {
-            permit = semaphore.acquire() => Some(
-                permit.expect("the Ingress concurrency semaphore remains open")
-            ),
-            () = cancellation.cancelled() => None,
-        },
-        Err(tokio::sync::TryAcquireError::Closed) => {
-            panic!("the Ingress concurrency semaphore remains open")
-        }
-    }
-}
-
 impl IngressService {
     async fn call(
         self,
         mut request: Request<Incoming>,
     ) -> Result<Response<ResponseBody>, Infallible> {
+        let method = request.method().clone();
         let _active_request = self.activity.as_ref().map(ConnectionActivity::begin);
         mark_sensitive_headers(request.headers_mut(), self.session_cookie.as_ref());
         let request_head_len = canonical_request_head_len(&request);
@@ -647,7 +462,10 @@ impl IngressService {
                 unavailable()
             }
         };
-        Ok(with_transport_headers(response.into_response(), request_id))
+        Ok(with_transport_headers(
+            response.normalize_body(&method).into_response(),
+            request_id,
+        ))
     }
 
     async fn dispatch(&self, request: Request<Incoming>) -> IngressResponse {
@@ -682,147 +500,16 @@ impl IngressService {
             Err(BodyReadError::TooLarge) => return payload_too_large(),
             Err(BodyReadError::Invalid) => return bad_request(),
         };
-        let (disconnect, disconnected) = oneshot::channel();
-        let cancel_on_drop = CancelRequestOnDrop(Some(disconnect));
-        let request = match inbound_request(
-            &parts.method,
-            &parts.uri,
-            &parts.headers,
+        dispatch_buffered(
+            parts,
             body,
             self.cancellation.clone(),
-            disconnected,
             self.session_cookie.as_ref(),
-        ) {
-            Ok(request) => request,
-            Err(rejection) => return request_rejection(rejection),
-        };
-        let (request, control) = middleware_request(request, parts.version);
-        let routes = self.routes.clone();
-        let stream_slot = Rc::new(RefCell::new(None));
-        let dispatch_stream_slot = stream_slot.clone();
-        let response =
-            AssertUnwindSafe(middleware::run(&self.middleware, request, move |request| {
-                let request = restore_inbound_request(request, control);
-                let stream_slot = dispatch_stream_slot.clone();
-                async move {
-                    let response = match request {
-                        Ok(request) => dispatch_response(routes.dispatch(request).await),
-                        Err(rejection) => request_rejection(rejection),
-                    };
-                    let (response, stream) = response.into_middleware_response();
-                    *stream_slot.borrow_mut() = stream;
-                    response
-                }
-            }))
-            .catch_unwind()
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .map_or_else(unavailable, |response| {
-                let response = IngressResponse::from_middleware_response(response);
-                let stream = stream_slot.borrow_mut().take();
-                match stream {
-                    Some(stream) => response.with_stream(stream),
-                    None => response,
-                }
-            });
-        drop(cancel_on_drop);
-        response
+            self.routes.clone(),
+            &self.middleware,
+        )
+        .await
     }
-}
-
-struct InboundRequestControl {
-    cancellation: CancellationToken,
-    credential: Option<CredentialEvidence>,
-    csrf_header_name: Option<HeaderName>,
-    disconnected: oneshot::Receiver<()>,
-    request_id: String,
-}
-
-fn middleware_request(
-    request: InboundRequest,
-    version: Version,
-) -> (WebIngressRequest, InboundRequestControl) {
-    let InboundRequest {
-        body,
-        cancellation,
-        credential,
-        csrf_header_name,
-        disconnected,
-        headers,
-        method,
-        path,
-        query,
-        request_id,
-    } = request;
-    let uri = query.map_or_else(|| path.clone(), |query| format!("{path}?{query}"));
-    let mut middleware_request = Request::builder()
-        .method(method)
-        .uri(uri)
-        .version(version)
-        .body(body)
-        .expect("an accepted HTTP request remains valid");
-    for header in headers {
-        let name = HeaderName::from_bytes(header.name.as_bytes())
-            .expect("Ingress produced a valid header name");
-        let value =
-            HeaderValue::from_str(&header.value).expect("Ingress produced a valid header value");
-        middleware_request.headers_mut().append(name, value);
-    }
-    middleware_request.headers_mut().insert(
-        REQUEST_ID_HEADER.clone(),
-        HeaderValue::from_str(&request_id).expect("Ingress request IDs are valid headers"),
-    );
-    (
-        middleware_request,
-        InboundRequestControl {
-            cancellation,
-            credential,
-            csrf_header_name,
-            disconnected,
-            request_id,
-        },
-    )
-}
-
-fn restore_inbound_request(
-    request: &WebIngressRequest,
-    control: InboundRequestControl,
-) -> Result<InboundRequest, RequestRejection> {
-    let connection_owned = connection_owned_headers(request.headers())?;
-    let headers = request
-        .headers()
-        .iter()
-        .filter(|(name, _)| {
-            !is_filtered_request_header(name)
-                && !control
-                    .csrf_header_name
-                    .as_ref()
-                    .is_some_and(|csrf| csrf == *name)
-                && !connection_owned.contains(*name)
-        })
-        .map(|(name, value)| {
-            value
-                .to_str()
-                .map(|value| InboundHeader {
-                    name: name.as_str().to_owned(),
-                    value: value.to_owned(),
-                })
-                .map_err(|_| RequestRejection::BadRequest)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(InboundRequest {
-        body: request.body().clone(),
-        cancellation: control.cancellation,
-        credential: control.credential,
-        csrf_header_name: control.csrf_header_name,
-        disconnected: control.disconnected,
-        headers,
-        method: normalized_method(request.method()),
-        path: request.uri().path().to_owned(),
-        query: request.uri().query().map(ToOwned::to_owned),
-        request_id: control.request_id,
-    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -877,336 +564,13 @@ async fn collect_bounded_body(
     })
 }
 
-fn dispatch_response(result: Result<DispatchResponse, DispatchError>) -> IngressResponse {
-    match result {
-        Ok(DispatchResponse::Buffered(response)) => from_endpoint(response),
-        Ok(DispatchResponse::Streaming(response)) => from_stream_endpoint(response),
-        Err(DispatchError::NotFound) => {
-            IngressResponse::json(StatusCode::NOT_FOUND, r#"{"error":"not_found"}"#)
-        }
-        Err(DispatchError::MethodNotAllowed(allowed)) => method_not_allowed(&allowed),
-        Err(DispatchError::Rejected) => {
-            IngressResponse::json(StatusCode::BAD_GATEWAY, r#"{"error":"endpoint_rejected"}"#)
-        }
-        Err(DispatchError::TimedOut) => IngressResponse::json(
-            StatusCode::GATEWAY_TIMEOUT,
-            r#"{"error":"endpoint_timeout"}"#,
-        ),
-        Err(DispatchError::Unavailable) => unavailable(),
-    }
-}
-
-fn from_stream_endpoint(response: crate::routing::StreamingResponse) -> IngressResponse {
-    let Some(status) = u16::try_from(response.status)
-        .ok()
-        .and_then(|status| StatusCode::from_u16(status).ok())
-    else {
-        response.stream.cancel();
-        return invalid_endpoint_response();
-    };
-    let mut headers = HeaderMap::with_capacity(response.headers.len());
-    for header in response.headers {
-        let Ok(name) = HeaderName::from_bytes(header.name.as_bytes()) else {
-            response.stream.cancel();
-            return invalid_endpoint_response();
-        };
-        if is_ingress_owned_response_header(&name) {
-            response.stream.cancel();
-            return invalid_endpoint_response();
-        }
-        let Ok(value) = HeaderValue::from_str(&header.value) else {
-            response.stream.cancel();
-            return invalid_endpoint_response();
-        };
-        headers.append(name, value);
-    }
-    IngressResponse {
-        status,
-        headers,
-        body: IngressBody::Streaming(response.stream),
-    }
-}
-
-fn mark_sensitive_headers(headers: &mut HeaderMap, session_cookie: Option<&SessionCookiePolicy>) {
-    for (name, value) in headers.iter_mut() {
-        if name == AUTHORIZATION
-            || name == COOKIE
-            || session_cookie.is_some_and(|policy| name == policy.csrf_header_name())
-        {
-            value.set_sensitive(true);
-        }
-    }
-}
-
-fn replace_request_id(headers: &mut HeaderMap, next: &RequestIdSequence) -> HeaderValue {
-    let request_id = request_id_header_value(next.next());
-    headers.insert(REQUEST_ID_HEADER, request_id.clone());
-    request_id
-}
-
-fn connection_owned_headers(headers: &HeaderMap) -> Result<HashSet<HeaderName>, RequestRejection> {
-    let mut owned = HashSet::new();
-    for value in headers.get_all(CONNECTION) {
-        let value = value.to_str().map_err(|_| RequestRejection::BadRequest)?;
-        for name in value
-            .split(',')
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-        {
-            if is_static_hop_by_hop_name(name) {
-                continue;
-            }
-            let name = HeaderName::from_bytes(name.as_bytes())
-                .map_err(|_| RequestRejection::BadRequest)?;
-            owned.insert(name);
-        }
-    }
-    Ok(owned)
-}
-
-fn is_static_hop_by_hop_name(name: &str) -> bool {
-    name.eq_ignore_ascii_case("connection")
-        || name.eq_ignore_ascii_case("te")
-        || name.eq_ignore_ascii_case("trailer")
-        || name.eq_ignore_ascii_case("transfer-encoding")
-        || name.eq_ignore_ascii_case("upgrade")
-        || name.eq_ignore_ascii_case("keep-alive")
-        || name.eq_ignore_ascii_case("proxy-connection")
-}
-
-fn is_static_hop_by_hop_header(name: &HeaderName) -> bool {
-    name == CONNECTION
-        || name == TE
-        || name == TRAILER
-        || name == TRANSFER_ENCODING
-        || name == UPGRADE
-        || name.as_str() == "keep-alive"
-        || name.as_str() == "proxy-connection"
-}
-
-fn is_filtered_request_header(name: &HeaderName) -> bool {
-    name == AUTHORIZATION
-        || name == COOKIE
-        || is_static_hop_by_hop_header(name)
-        || name == CONTENT_LENGTH
-        || name == HOST
-        || name == REQUEST_ID_HEADER
-}
-
-fn is_ingress_owned_response_header(name: &HeaderName) -> bool {
-    is_static_hop_by_hop_header(name)
-        || name == CONTENT_LENGTH
-        || name == NOSNIFF_HEADER
-        || name == REQUEST_ID_HEADER
-}
-
-fn inbound_request(
-    method: &Method,
-    uri: &Uri,
-    headers: &HeaderMap,
-    body: Bytes,
-    cancellation: CancellationToken,
-    disconnected: oneshot::Receiver<()>,
-    session_cookie: Option<&SessionCookiePolicy>,
-) -> Result<InboundRequest, RequestRejection> {
-    let request_id = request_id(headers)?;
-    let credential = select_credential(method, headers, session_cookie)?;
-    let csrf_header_name = session_cookie.map(|policy| policy.csrf_header_name().clone());
-    let connection_owned = connection_owned_headers(headers)?;
-    let headers = headers
-        .iter()
-        .filter(|(name, _)| {
-            !is_filtered_request_header(name)
-                && !csrf_header_name.as_ref().is_some_and(|csrf| csrf == *name)
-                && !connection_owned.contains(*name)
-        })
-        .map(|(name, value)| {
-            value
-                .to_str()
-                .map(|value| InboundHeader {
-                    name: name.as_str().to_owned(),
-                    value: value.to_owned(),
-                })
-                .map_err(|_| RequestRejection::BadRequest)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(InboundRequest {
-        body,
-        cancellation,
-        credential,
-        csrf_header_name,
-        disconnected,
-        headers,
-        method: normalized_method(method),
-        path: uri.path().to_owned(),
-        query: uri.query().map(ToOwned::to_owned),
-        request_id,
-    })
-}
-
-fn normalized_method(method: &Method) -> Method {
-    if method
-        .as_str()
-        .bytes()
-        .any(|byte| byte.is_ascii_lowercase())
-    {
-        let uppercase = method.as_str().to_ascii_uppercase();
-        Method::from_bytes(uppercase.as_bytes()).expect("an existing HTTP method remains valid")
-    } else {
-        method.clone()
-    }
-}
-
-fn from_endpoint(response: HandleResponse) -> IngressResponse {
-    let Some(status) = u16::try_from(response.status)
-        .ok()
-        .and_then(|status| StatusCode::from_u16(status).ok())
-    else {
-        return invalid_endpoint_response();
-    };
-    let body = response.body.into_shared();
-    let mut headers = HeaderMap::with_capacity(response.headers.len());
-    for header in response.headers {
-        let Ok(name) = HeaderName::from_bytes(header.name.as_bytes()) else {
-            return invalid_endpoint_response();
-        };
-        if is_ingress_owned_response_header(&name) {
-            return invalid_endpoint_response();
-        }
-        let Ok(value) = HeaderValue::from_str(&header.value) else {
-            return invalid_endpoint_response();
-        };
-        headers.append(name, value);
-    }
-    IngressResponse {
-        status,
-        headers,
-        body: IngressBody::Buffered(body),
-    }
-}
-
-fn canonical_request_head_len<B>(request: &Request<B>) -> usize {
-    request.method().as_str().len()
-        + 1
-        + serialized_uri_len(request.uri())
-        + 1
-        + version_len(request.version())
-        + 2
-        + request
-            .headers()
-            .iter()
-            .map(|(name, value)| name.as_str().len() + 2 + value.as_bytes().len() + 2)
-            .sum::<usize>()
-        + 2
-}
-
-const fn version_len(_version: Version) -> usize {
-    8
-}
-
-fn with_transport_headers(
-    mut response: Response<ResponseBody>,
-    request_id: HeaderValue,
-) -> Response<ResponseBody> {
-    response
-        .headers_mut()
-        .insert(REQUEST_ID_HEADER.clone(), request_id);
-    response
-        .headers_mut()
-        .insert(NOSNIFF_HEADER, HeaderValue::from_static("nosniff"));
-    response
-}
-
-fn serialized_uri_len(uri: &Uri) -> usize {
-    let mut size = uri
-        .path_and_query()
-        .map_or(0, |path_and_query| path_and_query.as_str().len());
-    if let Some(scheme) = uri.scheme_str() {
-        size += scheme.len() + 3;
-    }
-    if let Some(authority) = uri.authority() {
-        size += authority.as_str().len();
-    }
-    size
-}
-
-fn request_id(headers: &HeaderMap) -> Result<String, RequestRejection> {
-    let request_id = headers
-        .get(REQUEST_ID_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .ok_or(RequestRejection::BadRequest)?;
-    if request_id.is_empty() || request_id.len() > 128 {
-        return Err(RequestRejection::BadRequest);
-    }
-    Ok(request_id.to_owned())
-}
-
-fn bad_request() -> IngressResponse {
-    IngressResponse::json(StatusCode::BAD_REQUEST, r#"{"error":"bad_request"}"#)
-}
-
-fn csrf_forbidden() -> IngressResponse {
-    IngressResponse::json(StatusCode::FORBIDDEN, r#"{"error":"csrf_rejected"}"#)
-}
-
-fn request_rejection(rejection: RequestRejection) -> IngressResponse {
-    match rejection {
-        RequestRejection::BadRequest => bad_request(),
-        RequestRejection::CsrfForbidden => csrf_forbidden(),
-    }
-}
-
-fn payload_too_large() -> IngressResponse {
-    IngressResponse::json(
-        StatusCode::PAYLOAD_TOO_LARGE,
-        r#"{"error":"payload_too_large"}"#,
-    )
-}
-
-fn request_timeout() -> IngressResponse {
-    IngressResponse::json(
-        StatusCode::REQUEST_TIMEOUT,
-        r#"{"error":"request_timeout"}"#,
-    )
-}
-
-fn method_not_allowed(allowed: &[Method]) -> IngressResponse {
-    let mut response = IngressResponse::json(
-        StatusCode::METHOD_NOT_ALLOWED,
-        r#"{"error":"method_not_allowed"}"#,
-    );
-    let value = allowed
-        .iter()
-        .map(Method::as_str)
-        .collect::<Vec<_>>()
-        .join(", ");
-    if let Ok(value) = HeaderValue::from_str(&value) {
-        response.headers.insert(ALLOW, value);
-    }
-    response
-}
-
-fn unavailable() -> IngressResponse {
-    IngressResponse::json(
-        StatusCode::SERVICE_UNAVAILABLE,
-        r#"{"error":"endpoint_unavailable"}"#,
-    )
-}
-
-fn invalid_endpoint_response() -> IngressResponse {
-    IngressResponse::json(
-        StatusCode::BAD_GATEWAY,
-        r#"{"error":"invalid_endpoint_response"}"#,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         ConnectionActivity, acquire_request_permit, assert_server_result, body_is_already_complete,
-        canonical_request_head_len, is_static_hop_by_hop_name, request_id_header_value,
-        serialized_uri_len, wait_for_connection_idle,
+        canonical_request_head_len, wait_for_connection_idle,
     };
+    use crate::ingress::{is_static_hop_by_hop_name, request_id_header_value, serialized_uri_len};
     use axum::http::{Request, Uri, Version};
     use bytes::Bytes;
     use http_body_util::Empty;

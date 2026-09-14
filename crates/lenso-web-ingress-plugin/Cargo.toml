@@ -13,13 +13,17 @@ exclude = ["tests/repository_ownership.rs"]
 plugin-id = "lenso.web-ingress"
 root-slot = "http-ingress"
 
+[features]
+default = ["native"]
+native = ["dep:hyper", "dep:hyper-util", "dep:http-body-util", "tokio/net", "tokio/rt", "tokio/time"]
+
 [dependencies]
 bytes = "1"
 futures.workspace = true
 http = "1"
-http-body-util = "0.1"
-hyper = { version = "1", features = ["http1", "http2", "server"] }
-hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
+http-body-util = { version = "0.1", optional = true }
+hyper = { version = "1", optional = true, features = ["http1", "http2", "server"] }
+hyper-util = { version = "0.1", optional = true, features = ["server-auto", "tokio"] }
 lenso.workspace = true
 lenso-app-plan.workspace = true
 lenso-capability-http-endpoint = { version = "0.3.1", path = "../lenso-capability-http-endpoint" }
@@ -29,9 +33,10 @@ lenso-native-adapter.workspace = true
 matchit = "0.8"
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["macros", "time"] }
+tokio = { version = "1.52", default-features = false, features = ["macros", "sync"] }
 
 [dev-dependencies]
+lenso-web-http-parity-fixture = { path = "../../tests/fixtures/http-parity-plugin" }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 hyper = { version = "1", features = ["client", "http2"] }
 lenso-auth-sdk = { version = "0.2.3" }

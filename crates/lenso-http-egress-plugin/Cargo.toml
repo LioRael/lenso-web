@@ -12,7 +12,15 @@ rust-version.workspace = true
 plugin-id = "lenso.http-egress"
 root-slot = "http-clients"
 
+[features]
+default = ["native"]
+native = ["dep:reqwest", "tokio/net", "tokio/rt"]
+workers = ["dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
+
 [dependencies]
+http.workspace = true
+url = "2.5"
+lenso-app-plan.workspace = true
 bytes.workspace = true
 futures.workspace = true
 lenso.workspace = true
@@ -20,10 +28,15 @@ lenso-capability-http-client = { version = "0.3.0", path = "../lenso-capability-
 lenso-kernel.workspace = true
 lenso-native-adapter.workspace = true
 lenso-native-adapter-macros.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
+tokio = { version = "1.52", default-features = false, features = ["sync"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = { version = "0.3", optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
 
 [dev-dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
