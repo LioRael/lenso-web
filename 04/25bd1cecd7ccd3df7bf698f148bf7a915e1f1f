@@ -1,0 +1,91 @@
+.github/workflows/ci.yml
+  s_3724267b9ee00e::t_e4f2be620f1ea9 38,44-55,66
+.gitignore
+  s_3724267b9ee00e::t_3f3bf84997d6d5 2-3
+Cargo.toml
+  s_3724267b9ee00e::t_e1f6baad7b34e3 8,17
+crates/lenso-capability-websocket-endpoint/Cargo.toml
+  s_3724267b9ee00e::t_576211508a1e15 1-29
+crates/lenso-capability-websocket-endpoint/README.md
+  s_3724267b9ee00e::t_e5dad0d9ff53ef 1-32
+crates/lenso-capability-websocket-endpoint/capability.json
+  s_3724267b9ee00e::t_d147c981929aa4 1-22
+crates/lenso-capability-websocket-endpoint/schemas/connect-error.schema.json
+  s_3724267b9ee00e::t_02680a9d87fba5 1-14
+crates/lenso-capability-websocket-endpoint/schemas/connect-frame.schema.json
+  s_3724267b9ee00e::t_0aceab6d4600c1 1-40
+crates/lenso-capability-websocket-endpoint/schemas/connect-open.schema.json
+  s_3724267b9ee00e::t_96119a215125ce 1-99
+crates/lenso-capability-websocket-endpoint/schemas/describe-error.schema.json
+  s_3724267b9ee00e::t_9047671e686d20 1-4
+crates/lenso-capability-websocket-endpoint/schemas/describe-request.schema.json
+  s_3724267b9ee00e::t_e031b9fefa2239 1-6
+crates/lenso-capability-websocket-endpoint/schemas/describe-response.schema.json
+  s_3724267b9ee00e::t_8f285cd1dc58c6 1-31
+crates/lenso-capability-websocket-endpoint/src/generated.rs
+  s_3724267b9ee00e::t_c50daebd17bcb5 1-668
+crates/lenso-capability-websocket-endpoint/src/lib.rs
+  s_3724267b9ee00e::t_f8bd7162706d0f 1-12
+crates/lenso-http-egress-plugin/js/event-fetch.mjs
+  s_3724267b9ee00e::t_61531e8f943e9a 94-117
+crates/lenso-http-egress-plugin/js/package.json
+  s_3724267b9ee00e::t_4deb5489425c3e 1-10
+crates/lenso-web-ingress-plugin/Cargo.toml
+  s_3724267b9ee00e::t_70d3bc48b060f7 18,21-23,34,43
+crates/lenso-web-ingress-plugin/config.schema.json
+  s_3724267b9ee00e::t_d942a7a3264773 37-41,60-88
+crates/lenso-web-ingress-plugin/js/README.md
+  s_3724267b9ee00e::t_9423aa5005b49b 1-25
+crates/lenso-web-ingress-plugin/js/package.json
+  s_3724267b9ee00e::t_629a577abae5e2 1-17
+crates/lenso-web-ingress-plugin/js/test/websocket.test.mjs
+  s_3724267b9ee00e::t_c50f9735469e40 1-124
+crates/lenso-web-ingress-plugin/js/websocket.mjs
+  s_3724267b9ee00e::t_f9e12d542eff80 1-201
+crates/lenso-web-ingress-plugin/src/config.rs
+  s_3724267b9ee00e::t_9f8d846a6f9427 87-152,179-180,197,203-211,296-298
+crates/lenso-web-ingress-plugin/src/event.rs
+  s_3724267b9ee00e::t_3b1dae3da17827 1,6-8,32-39,45,108-109,112,115-132,143,154,156-161,196-208,273-275,281-282,289
+crates/lenso-web-ingress-plugin/src/ingress.rs
+  s_3724267b9ee00e::t_57dbd3e8c1be86 32-34,132,151,154-156,182-205,210,332-350,684-686,692-711,734,750,760,767-769
+crates/lenso-web-ingress-plugin/src/lib.rs
+  s_3724267b9ee00e::t_adbfc2b6d56206 12,18,20,31,47-50,62-69
+crates/lenso-web-ingress-plugin/src/native.rs
+  s_3724267b9ee00e::t_8f8236a8beb981 140,155,209,217,221-222,268,275-277
+crates/lenso-web-ingress-plugin/src/response_stream.rs
+  s_3724267b9ee00e::t_21fd7ab3f2fdbd 1-102
+crates/lenso-web-ingress-plugin/src/routing.rs
+  s_3724267b9ee00e::t_c436ed6b02af72 3,13,28,43-44,53-56,74,82-83,193-223,229-230,237-240,249,266,277-279,312-349
+crates/lenso-web-ingress-plugin/src/server.rs
+  s_3724267b9ee00e::t_70403e2ea2215d 25,40-47,50,110-112,127,134-136,159,168-180,182-193,203-206,285-288,302,348-349,357-358,383-385,449-452,457,483-502
+crates/lenso-web-ingress-plugin/src/websocket.rs
+  s_3724267b9ee00e::t_bed98292791602 1-256
+crates/lenso-web-ingress-plugin/src/websocket_handshake.rs
+  s_3724267b9ee00e::t_5ca5fcfe52c60e 1-128
+crates/lenso-web-ingress-plugin/src/websocket_native.rs
+  s_3724267b9ee00e::t_721c006e8e9144 1-151
+crates/lenso-web-ingress-plugin/tests/http_streaming.rs
+  s_3724267b9ee00e::t_5cac2e41f0532e 35,63,70,96,211-217,261-264,277,279,281,289-305,308-369
+crates/lenso-web-ingress-plugin/tests/websocket.rs
+  s_3724267b9ee00e::t_7e3288b472ffc9 1-223
+tests/fixtures/duplex-endpoint-plugin/Cargo.toml
+  s_3724267b9ee00e::t_ca2659abaab10e 1-12
+tests/fixtures/duplex-endpoint-plugin/src/lib.rs
+  s_3724267b9ee00e::t_415e6b148b1737 1-263
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0425bd1cecd7ccd3df7bf698f148bf7a915e1f1f",
+  "prompts": {},
+  "sessions": {
+    "s_3724267b9ee00e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a09863-bdc5-7501-9f17-8276e89fcd6d",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "LioRael <leo@lenso.dev>"
+    }
+  }
+}
