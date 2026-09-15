@@ -1,0 +1,25 @@
+.github/workflows/release-workers-npm.yml
+  s_3724267b9ee00e::t_6d75163d9857dd 1-65
+crates/lenso-http-egress-plugin/js/package.json
+  s_3724267b9ee00e::t_d97379f239a150 7-24
+crates/lenso-web-ingress-plugin/js/package.json
+  s_3724267b9ee00e::t_a9e113d8b9f734 16-24
+docs/workers-npm-release.md
+  s_3724267b9ee00e::t_b1a77c72d1a172 1-19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "bf10b6ce720a3cd60a5b983dc5187b39401fc266",
+  "prompts": {},
+  "sessions": {
+    "s_3724267b9ee00e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a09863-bdc5-7501-9f17-8276e89fcd6d",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "LioRael <leo@lenso.dev>"
+    }
+  }
+}
