@@ -60,6 +60,8 @@ jobs:
           mkdir release-artifacts
           npm pack "./$PACKAGE_PATH" --pack-destination release-artifacts
           sha256sum release-artifacts/*.tgz
+      - name: Verify npm artifact resolution
+        run: npm publish ./release-artifacts/*.tgz --dry-run --access public --provenance=false
       - name: Publish verified artifact
         if: inputs.publish
-        run: npm publish release-artifacts/*.tgz --access public --provenance
+        run: npm publish ./release-artifacts/*.tgz --access public --provenance
