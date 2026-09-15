@@ -13,7 +13,7 @@ lenso-kernel.workspace = true
 lenso-native-adapter.workspace = true
 lenso-otel-plugin = "0.1.4"
 lenso-runner.workspace = true
-lenso-web-ingress-plugin = { version = "0.4.2", path = "../../crates/lenso-web-ingress-plugin" }
+lenso-web-ingress-plugin = { version = "0.4.3", path = "../../crates/lenso-web-ingress-plugin" }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "signal", "time"] }
 

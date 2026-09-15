@@ -1116,7 +1116,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-http-egress-plugin"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "axum",
  "bytes",
@@ -1304,7 +1304,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-web-ingress-plugin"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "axum",
  "base64",
