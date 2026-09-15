@@ -34,7 +34,11 @@
     },
     "session_cookie": {
       "type": "object",
-      "required": ["name", "csrf_cookie_name", "csrf_header_name"],
+      "required": [
+        "name",
+        "csrf_cookie_name",
+        "csrf_header_name"
+      ],
       "properties": {
         "name": {
           "type": "string",
@@ -50,6 +54,35 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 128
+        }
+      },
+      "additionalProperties": false
+    },
+    "websocket": {
+      "type": "object",
+      "required": [
+        "allowed_origins",
+        "max_message_bytes",
+        "max_session_bytes"
+      ],
+      "properties": {
+        "allowed_origins": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "string",
+            "maxLength": 2048
+          }
+        },
+        "max_message_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "max_session_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
         }
       },
       "additionalProperties": false

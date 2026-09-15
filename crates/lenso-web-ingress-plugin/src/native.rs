@@ -137,6 +137,7 @@ impl NativePluginFactory for WebIngressFactory {
                 diagnostics: self.diagnostics.clone(),
                 endpoints: ManyPort::default(),
                 stream_endpoints: ManyPort::default(),
+                websocket_endpoints: ManyPort::default(),
                 middleware: self.middleware.clone(),
                 observer: self.observer.clone(),
                 listener: Rc::new(RefCell::new(None)),
@@ -151,6 +152,7 @@ struct WebIngressLifecycle {
     diagnostics: Rc<dyn WebIngressDiagnostics>,
     endpoints: ManyPort<EndpointClient>,
     stream_endpoints: ManyPort<StreamEndpointClient>,
+    websocket_endpoints: ManyPort<lenso_capability_websocket_endpoint::EndpointClient>,
     middleware: Vec<Rc<dyn WebIngressMiddleware>>,
     observer: Rc<WebIngressState>,
     listener: Rc<RefCell<Option<TcpListener>>>,
@@ -204,6 +206,7 @@ impl PluginLifecycle for WebIngressLifecycle {
         let diagnostics = self.diagnostics.clone();
         let endpoints = self.endpoints.clone();
         let stream_endpoints = self.stream_endpoints.clone();
+        let websocket_endpoints = self.websocket_endpoints.clone();
         let readiness = context.readiness();
         let tasks = context.tasks().clone();
         let cancellation = context.cancellation();
@@ -211,9 +214,12 @@ impl PluginLifecycle for WebIngressLifecycle {
         Box::pin(async move {
             endpoints.connect(&dependencies)?;
             stream_endpoints.connect(&dependencies)?;
+            websocket_endpoints.connect(&dependencies)?;
             let routes = routing::RouteTable::resolve(
                 endpoints,
                 stream_endpoints,
+                websocket_endpoints,
+                config.websocket().cloned(),
                 &dependencies,
                 config.request_timeout(),
                 diagnostics,
@@ -259,12 +265,15 @@ mod tests {
         let descriptor = serde_json::to_value(WebIngressFactory::plugin_descriptor()).unwrap();
         assert_eq!(descriptor["plugin_id"], PACKAGE_ID);
         let requirements = descriptor["required_capabilities"].as_array().unwrap();
-        assert_eq!(requirements.len(), 2);
+        assert_eq!(requirements.len(), 3);
         assert!(requirements.iter().any(|requirement| {
             requirement["capability_id"] == lenso_capability_http_endpoint::CAPABILITY_ID
         }));
         assert!(requirements.iter().any(|requirement| {
             requirement["capability_id"] == lenso_capability_http_stream_endpoint::CAPABILITY_ID
+        }));
+        assert!(requirements.iter().any(|requirement| {
+            requirement["capability_id"] == lenso_capability_websocket_endpoint::CAPABILITY_ID
         }));
         assert!(descriptor["configuration_schema"].is_object());
     }

@@ -1,5 +1,6 @@
 use std::{collections::HashMap, rc::Rc, time::Duration};
 
+use crate::{WebSocketConfig, websocket::WebSocketUpgrade, websocket_handshake::Handshake};
 use futures::future::{Either, select};
 use http::Method;
 use lenso::prelude::ManyPort;
@@ -9,6 +10,7 @@ use lenso_capability_http_endpoint::{
     HandleRequestHeadersItem, HandleRequestPathParametersItem,
 };
 use lenso_capability_http_stream_endpoint as stream_endpoint;
+use lenso_capability_websocket_endpoint as websocket_endpoint;
 use lenso_kernel::{
     CancellationToken, NativeStream, PluginDependencies, RuntimeFailure, StreamEvent,
 };
@@ -23,6 +25,7 @@ use crate::{
 enum RouteProvider {
     Buffered(usize),
     Streaming(usize),
+    WebSocket(usize),
 }
 
 #[derive(Debug)]
@@ -37,6 +40,8 @@ pub(super) struct RouteTable {
     diagnostics: Rc<dyn WebIngressDiagnostics>,
     providers: ManyPort<EndpointClient>,
     stream_providers: ManyPort<stream_endpoint::StreamEndpointClient>,
+    websocket_providers: ManyPort<websocket_endpoint::EndpointClient>,
+    websocket_policy: Option<WebSocketConfig>,
     methods: HashMap<Method, Router<RouteTarget>>,
     manifest: WebIngressRouteManifest,
     request_timeout: Duration,
@@ -45,6 +50,10 @@ pub(super) struct RouteTable {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum DispatchError {
     NotFound,
+    UpgradeRequired,
+    BadHandshake,
+    Unauthorized,
+    Forbidden,
     MethodNotAllowed(Vec<Method>),
     Rejected,
     TimedOut,
@@ -62,6 +71,7 @@ pub(super) struct StreamingResponse {
 pub(super) enum DispatchResponse {
     Buffered(lenso_capability_http_endpoint::HandleResponse),
     Streaming(StreamingResponse),
+    WebSocket(WebSocketUpgrade),
 }
 
 impl RouteTable {
@@ -69,6 +79,8 @@ impl RouteTable {
     pub(super) async fn resolve(
         providers: ManyPort<EndpointClient>,
         stream_providers: ManyPort<stream_endpoint::StreamEndpointClient>,
+        websocket_providers: ManyPort<websocket_endpoint::EndpointClient>,
+        websocket_policy: Option<WebSocketConfig>,
         dependencies: &PluginDependencies,
         request_timeout: Duration,
         diagnostics: Rc<dyn WebIngressDiagnostics>,
@@ -178,15 +190,52 @@ impl RouteTable {
                 "Web Ingress requires at least one bound HTTP Endpoint route",
             ));
         }
+        for (provider_index, provider) in websocket_providers.iter().enumerate() {
+            if websocket_policy.is_none() {
+                return Err(plugin_failure(
+                    "WebSocket routes require explicit transport policy",
+                ));
+            }
+            let description = provider
+                .describe_websocket(websocket_endpoint::DescribeWebsocketRequest {})
+                .await
+                .map_err(|_| plugin_failure("WebSocket route description failed"))?;
+            for route in description.routes {
+                if route.route_id.trim().is_empty()
+                    || !route.path.starts_with('/')
+                    || route.path.contains(['?', '#'])
+                {
+                    return Err(plugin_failure("invalid WebSocket route"));
+                }
+                manifest.push(WebIngressRoute::new("GET", &route.path, &route.route_id));
+                methods
+                    .entry(Method::GET)
+                    .or_default()
+                    .insert(
+                        &route.path,
+                        RouteTarget {
+                            route_id: route.route_id,
+                            provider: RouteProvider::WebSocket(provider_index),
+                        },
+                    )
+                    .map_err(|_| plugin_failure("conflicting WebSocket route"))?;
+            }
+        }
         Ok(Rc::new(Self {
             dependencies: dependencies.clone(),
             diagnostics,
             providers,
             stream_providers,
+            websocket_providers,
+            websocket_policy,
             manifest: WebIngressRouteManifest::new(manifest),
             methods,
             request_timeout,
         }))
+    }
+
+    pub(super) fn websocket_policy(&self) -> Option<&WebSocketConfig> {
+        self.websocket_policy.as_ref()
     }
 
     pub(super) const fn manifest(&self) -> &WebIngressRouteManifest {
@@ -197,6 +246,7 @@ impl RouteTable {
     pub(super) async fn dispatch(
         &self,
         request: InboundRequest,
+        handshake: Option<Handshake>,
     ) -> Result<DispatchResponse, DispatchError> {
         let Some(router) = self.methods.get(&request.method) else {
             let allowed = self.allowed_methods(&request.path);
@@ -213,7 +263,7 @@ impl RouteTable {
             }
             return Err(DispatchError::MethodNotAllowed(allowed));
         };
-        let path_parameters = matched
+        let path_parameters: Vec<HandleRequestPathParametersItem> = matched
             .params
             .iter()
             .map(|(name, value)| HandleRequestPathParametersItem {
@@ -224,7 +274,9 @@ impl RouteTable {
         let route_id = matched.value.route_id.clone();
         let provider = &matched.value.provider;
         let provider_index = match provider {
-            RouteProvider::Buffered(index) | RouteProvider::Streaming(index) => *index,
+            RouteProvider::Buffered(index)
+            | RouteProvider::Streaming(index)
+            | RouteProvider::WebSocket(index) => *index,
         };
         let request_id = request.request_id.clone();
         let cancellation = CancellationToken::new();
@@ -257,6 +309,44 @@ impl RouteTable {
         let body = request.body;
         let invocation = async {
             match provider {
+                RouteProvider::WebSocket(provider_index) => {
+                    let handshake = handshake.ok_or(DispatchError::UpgradeRequired)?;
+                    if !body.is_empty() {
+                        return Err(DispatchError::BadHandshake);
+                    }
+                    let stream = self.websocket_providers[*provider_index].connect_websocket_with_context(context,
+                        websocket_endpoint::ConnectWebsocketRequest {
+                            credential: credential.map(|(scheme,value)|websocket_endpoint::ConnectWebsocketRequestCredential {scheme,value}),
+                            headers: headers.into_iter().map(|(name,value)|websocket_endpoint::ConnectWebsocketRequestHeadersItem {name,value}).collect(),
+                            path, query, request_id:request_id.clone(), route_id:route_id.clone(),
+                            path_parameters:path_parameters.into_iter().map(|parameter|websocket_endpoint::ConnectWebsocketRequestPathParametersItem {name:parameter.name,value:parameter.value}).collect(),
+                            protocols:handshake.protocols.clone(),
+                        }).await.map_err(|error|match error {
+                            websocket_endpoint::EndpointConnectWebsocketInvocationError::Domain(error) => match error {
+                                websocket_endpoint::ConnectWebsocketError::Unauthorized => DispatchError::Unauthorized,
+                                websocket_endpoint::ConnectWebsocketError::Rejected => DispatchError::Forbidden,
+                                websocket_endpoint::ConnectWebsocketError::UnsupportedProtocol => DispatchError::BadHandshake,
+                                websocket_endpoint::ConnectWebsocketError::Unknown(_) => DispatchError::Rejected,
+                            },
+                            websocket_endpoint::EndpointConnectWebsocketInvocationError::Runtime(error) => self.runtime_dispatch_error(&request_id,&route_id,*provider_index,&error),
+                        })?;
+                    let policy = self
+                        .websocket_policy
+                        .as_ref()
+                        .ok_or(DispatchError::Unavailable)?;
+                    let session = crate::WebSocketSession::accept(
+                        stream,
+                        &handshake.protocols,
+                        policy.max_message_bytes(),
+                        policy.max_session_bytes(),
+                    )
+                    .await
+                    .map_err(|_| DispatchError::Rejected)?;
+                    Ok(DispatchResponse::WebSocket(WebSocketUpgrade {
+                        session,
+                        accept_key: handshake.accept,
+                    }))
+                }
                 RouteProvider::Buffered(provider_index) => {
                     let response = self.providers[*provider_index]
                         .handle_with_context(

@@ -1,0 +1,10 @@
+{
+  "name": "@lenso/http-egress-workers",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "description": "Event-scoped Fetch transport for the Lenso HTTP Egress Plugin",
+  "exports": {".": "./event-fetch.mjs"},
+  "files": ["event-fetch.mjs"],
+  "scripts": {"test": "node --test event-fetch.test.mjs"}
+}

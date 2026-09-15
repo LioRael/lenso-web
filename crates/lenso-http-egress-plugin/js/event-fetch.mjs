@@ -91,3 +91,27 @@ export function createEventHttpFetch({ fetch, setTimeout, clearTimeout }) {
     return { promise, abort };
   };
 }
+
+/** Bind Web's validated Fetch implementation to the Host's single event scope. */
+export function createScopedHttpFetch(scope, { fetch, setTimeout, clearTimeout }) {
+  const track = value => scope.trackNative(value);
+  const transport = createEventHttpFetch({ setTimeout, clearTimeout,
+    fetch(...args) {
+      return track(Promise.resolve(fetch(...args)).then(async response => {
+        if (scope.closed) {
+          // This native continuation still belongs to the originating event.
+          if (response.body) await track(response.body.cancel()).catch(() => {});
+          return { status: response.status, headers: response.headers, redirected: response.redirected, body: null };
+        }
+        return { status: response.status, headers: response.headers, redirected: response.redirected,
+          body: response.body && { getReader() {
+            const reader = response.body.getReader();
+            return { read: () => track(reader.read()), cancel: () => track(reader.cancel()),
+              releaseLock: () => reader.releaseLock() };
+          } },
+        };
+      }));
+    },
+  });
+  return request => scope.operation(() => transport(request));
+}

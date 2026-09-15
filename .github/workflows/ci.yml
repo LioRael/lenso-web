@@ -35,11 +35,24 @@ jobs:
             cargo check --locked --manifest-path crates/lenso-capability-http-endpoint/Cargo.toml --target "$target"
             cargo check --locked --manifest-path crates/lenso-capability-http-stream-endpoint/Cargo.toml --target "$target"
             cargo check --locked --manifest-path crates/lenso-http-auth/Cargo.toml --target "$target"
+            cargo check --locked -p lenso-capability-websocket-endpoint --target "$target"
           done
       - name: Check event HTTP ingress
         run: cargo check --locked -p lenso-web-ingress-plugin --no-default-features --target wasm32-unknown-unknown
       - name: Check event HTTP Egress
         run: cargo check --locked -p lenso-http-egress-plugin --no-default-features --features workers --target wasm32-unknown-unknown
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: LioRael/lenso-runtime-rust
+          ref: 905a59141ca0e349b734fb7de99d010f2b0dc0df
+          path: .ci/runtime
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Check Workers WebSocket transport
+        run: |
+          npm install --ignore-scripts --no-save --package-lock=false --prefix crates/lenso-web-ingress-plugin/js "$GITHUB_WORKSPACE/.ci/runtime/packages/workers-runtime"
+          node --test crates/lenso-web-ingress-plugin/js/test/*.test.mjs
       - name: Check event Fetch bridge
         run: node --test crates/lenso-http-egress-plugin/js/event-fetch.test.mjs
       - name: Package Capability crates
@@ -50,10 +63,6 @@ jobs:
           cargo package --locked --manifest-path crates/lenso-capability-http-stream-endpoint/Cargo.toml
           cargo package --locked --manifest-path crates/lenso-http-auth/Cargo.toml
           cargo package --locked --manifest-path crates/lenso-openapi-plugin/Cargo.toml
-          if cargo search --limit 1 lenso-capability-http-stream-endpoint | grep -q '^lenso-capability-http-stream-endpoint = "0.1.1"'; then
-            cargo package --locked --manifest-path crates/lenso-web-ingress-plugin/Cargo.toml
-          else
-            echo "Skipping ingress verification until its new stream Capability dependency is published"
-          fi
+          cargo package --locked -p lenso-capability-websocket-endpoint -p lenso-web-ingress-plugin
       - name: Package HTTP Egress release set
         run: cargo package --locked --manifest-path crates/lenso-http-egress-plugin/Cargo.toml

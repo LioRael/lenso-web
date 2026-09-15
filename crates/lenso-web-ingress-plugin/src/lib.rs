@@ -9,14 +9,15 @@ mod middleware;
 mod native;
 #[cfg(feature = "native")]
 mod replication;
+mod response_stream;
 mod routing;
 #[cfg(feature = "native")]
 mod server;
 mod session_cookie;
 
-pub use config::{SessionCookieConfig, WebIngressConfig};
+pub use config::{SessionCookieConfig, WebIngressConfig, WebSocketConfig};
 pub use diagnostics::{WebIngressDiagnostics, WebIngressEndpointFailure};
-pub use event::WebIngressEventFactory;
+pub use event::{WebIngressEventBody, WebIngressEventFactory};
 use lenso_app_plan::{CapabilityRequirementPlan, authoring::PluginDescriptor};
 use lenso_kernel::RuntimeFailure;
 pub use manifest::{WebIngressReplicaMismatch, WebIngressRoute, WebIngressRouteManifest};
@@ -27,6 +28,7 @@ pub use middleware::{
 pub use native::WebIngressFactory;
 #[cfg(feature = "native")]
 pub use replication::WebIngressListenerCoordinator;
+pub use response_stream::WebIngressResponseStream;
 
 pub const PACKAGE_ID: &str = "lenso.web-ingress";
 pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -42,6 +44,10 @@ fn plugin_descriptor() -> PluginDescriptor {
             lenso_capability_http_stream_endpoint::CAPABILITY_ID,
             lenso_capability_http_stream_endpoint::DESCRIPTOR_VERSION,
         ))
+        .with_requirement(CapabilityRequirementPlan::many(
+            lenso_capability_websocket_endpoint::CAPABILITY_ID,
+            lenso_capability_websocket_endpoint::DESCRIPTOR_VERSION,
+        ))
         .with_configuration_schema(
             serde_json::from_str(CONFIGURATION_SCHEMA_JSON)
                 .expect("the embedded Web Ingress configuration schema is valid"),
@@ -53,3 +59,11 @@ fn plugin_failure(detail: impl Into<String>) -> RuntimeFailure {
         detail: detail.into(),
     }
 }
+
+mod websocket;
+pub use websocket::WebSocketSession;
+
+mod websocket_handshake;
+
+#[cfg(feature = "native")]
+mod websocket_native;

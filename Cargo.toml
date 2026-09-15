@@ -5,6 +5,7 @@ members = [
     "crates/lenso-capability-http-endpoint",
     "crates/lenso-capability-http-endpoint-macros",
     "crates/lenso-capability-http-stream-endpoint",
+    "crates/lenso-capability-websocket-endpoint",
     "crates/lenso-http-egress-plugin",
     "crates/lenso-http-auth",
     "crates/lenso-web-ingress-plugin",
@@ -13,6 +14,7 @@ members = [
     "examples/observe-sample-web-app",
     "tests/fixtures/query-endpoint-plugin",
     "tests/fixtures/http-parity-plugin",
+    "tests/fixtures/duplex-endpoint-plugin",
 ]
 
 [workspace.package]

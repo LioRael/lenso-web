@@ -1,11 +1,11 @@
-//! Event-owned registration for hosts that provide buffered HTTP events.
+//! Event-owned registration with buffered requests and pull-based response streams.
 use crate::{
     PACKAGE_ID, PACKAGE_VERSION, WebIngressConfig, WebIngressDiagnostics, WebIngressMiddleware,
     WebIngressRouteManifest, diagnostics,
     ingress::{
-        IngressBody, IngressResponse, RequestIdSequence, acquire_request_permit,
-        canonical_request_head_len, dispatch_buffered, mark_sensitive_headers, payload_too_large,
-        replace_request_id, unavailable, with_transport_headers,
+        IngressBody, IngressResponse, RequestIdSequence, canonical_request_head_len,
+        dispatch_buffered, mark_sensitive_headers, payload_too_large, replace_request_id,
+        unavailable, with_transport_headers,
     },
     middleware, plugin_failure,
     routing::RouteTable,
@@ -29,12 +29,20 @@ use std::{
 };
 use tokio::sync::Semaphore;
 
+/// A normalized response body, preserving the existing Stream Endpoint contract.
+#[derive(Debug)]
+pub enum WebIngressEventBody {
+    Buffered(Bytes),
+    Streaming(crate::WebIngressResponseStream),
+    WebSocket(crate::WebSocketSession),
+}
+
 #[derive(Debug)]
 struct EventState {
     config: WebIngressConfig,
     routes: Rc<RouteTable>,
     readiness: ReadinessContext,
-    concurrency: Semaphore,
+    concurrency: std::sync::Arc<Semaphore>,
     middleware: Vec<Rc<dyn WebIngressMiddleware>>,
     next_request_id: RequestIdSequence,
 }
@@ -97,17 +105,31 @@ impl WebIngressEventFactory {
             .map(|state| state.routes.manifest().clone())
     }
 
-    /// Dispatches through the normal Plan-bound generated Endpoint clients.
-    ///
-    /// Admission fails before Ready and after drain begins. `cancellation` is
-    /// supplied by this event's host I/O scope and must never be shared across
-    /// events. The generated invocation receives a deadline from the Kernel's
-    /// Driver. Streaming bindings are rejected during activation.
+    /// Buffered compatibility entrypoint. Use `handle_response` when the Plan
+    /// contains Stream Endpoint providers; no implicit stream collection occurs.
     pub async fn handle(
+        &self,
+        request: Request<Bytes>,
+        cancellation: CancellationToken,
+    ) -> Result<Response<Bytes>, RuntimeFailure> {
+        let response = self.handle_response(request, cancellation).await?;
+        let (parts, body) = response.into_parts();
+        match body {
+            WebIngressEventBody::Buffered(bytes) => Ok(Response::from_parts(parts, bytes)),
+            WebIngressEventBody::WebSocket(_) | WebIngressEventBody::Streaming(_) => Err(
+                plugin_failure("streaming response requires handle_response"),
+            ),
+        }
+    }
+
+    /// Dispatches through the same Plan-bound routes, credentials and middleware
+    /// as native ingress. The Host keeps the App alive until body termination,
+    /// then awaits App shutdown before releasing its event generation lease.
+    pub async fn handle_response(
         &self,
         mut request: Request<Bytes>,
         cancellation: CancellationToken,
-    ) -> Result<Response<Bytes>, RuntimeFailure> {
+    ) -> Result<Response<WebIngressEventBody>, RuntimeFailure> {
         let state = self
             .state
             .borrow()
@@ -118,6 +140,7 @@ impl WebIngressEventFactory {
         let head_len = canonical_request_head_len(&request);
         let request_id = replace_request_id(request.headers_mut(), &state.next_request_id);
         let method = request.method().clone();
+        let body_permit = RefCell::new(None);
         let work = async {
             if !state.readiness.is_open() || !state.readiness.is_accepting() {
                 return unavailable();
@@ -128,9 +151,14 @@ impl WebIngressEventFactory {
                     r#"{"error":"request_header_fields_too_large"}"#,
                 );
             }
-            let Some(_permit) = acquire_request_permit(&state.concurrency, &cancellation).await
-            else {
+            if cancellation.is_cancelled() {
                 return unavailable();
+            }
+            let acquiring = state.concurrency.clone().acquire_owned();
+            futures::pin_mut!(acquiring);
+            *body_permit.borrow_mut() = match select(acquiring, cancellation.cancelled()).await {
+                Either::Left((Ok(permit), _)) => Some(permit),
+                _ => return unavailable(),
             };
             if !state.readiness.is_accepting() {
                 return unavailable();
@@ -165,10 +193,19 @@ impl WebIngressEventFactory {
             }
         };
         let response = response.normalize_body(&method);
-        let IngressBody::Buffered(body) = response.body else {
-            return Err(plugin_failure(
-                "event ingress cannot serialize a streaming response",
-            ));
+        let body = match response.body {
+            IngressBody::WebSocket(upgrade) => {
+                upgrade
+                    .session
+                    .retain_permit(body_permit.borrow_mut().take());
+                WebIngressEventBody::WebSocket(upgrade.session)
+            }
+            IngressBody::Buffered(bytes) => WebIngressEventBody::Buffered(bytes),
+            IngressBody::Streaming(stream) => {
+                let stream = crate::WebIngressResponseStream::new(stream);
+                stream.retain_permit(body_permit.borrow_mut().take());
+                WebIngressEventBody::Streaming(stream)
+            }
         };
         let mut result = Response::new(body);
         *result.status_mut() = response.status;
@@ -233,23 +270,23 @@ impl PluginLifecycle for EventLifecycle {
         Box::pin(async move {
             let endpoints = ManyPort::<EndpointClient>::default();
             let streams = ManyPort::<StreamEndpointClient>::default();
+            let websockets =
+                ManyPort::<lenso_capability_websocket_endpoint::EndpointClient>::default();
+            websockets.connect(context.dependencies())?;
             endpoints.connect(context.dependencies())?;
             streams.connect(context.dependencies())?;
-            if streams.iter().next().is_some() {
-                return Err(plugin_failure(
-                    "buffered event ingress does not support Stream Endpoint bindings",
-                ));
-            }
             let routes = RouteTable::resolve(
                 endpoints,
                 streams,
+                websockets,
+                config.websocket().cloned(),
                 context.dependencies(),
                 config.request_timeout(),
                 diagnostics,
             )
             .await?;
             *state.borrow_mut() = Some(Rc::new(EventState {
-                concurrency: Semaphore::new(config.max_concurrent_requests()),
+                concurrency: std::sync::Arc::new(Semaphore::new(config.max_concurrent_requests())),
                 middleware,
                 config,
                 routes,

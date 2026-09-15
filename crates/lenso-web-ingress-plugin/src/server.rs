@@ -22,7 +22,7 @@ use hyper_util::{
     server::conn::auto,
 };
 use lenso_capability_http_stream_endpoint as stream_endpoint;
-use lenso_kernel::{CancellationToken, NativeStream, StreamEvent};
+use lenso_kernel::{CancellationToken, NativeStream, RuntimeFailure};
 use std::{
     cell::Cell,
     convert::Infallible,
@@ -37,8 +37,17 @@ use tokio::{net::TcpListener, sync::Semaphore};
 
 const IDLE_CONNECTION_CLOSE_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
 
+#[derive(Default)]
+struct SocketTask(std::cell::RefCell<Option<futures::future::LocalBoxFuture<'static, ()>>>);
+impl std::fmt::Debug for SocketTask {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SocketTask")
+    }
+}
+
 #[derive(Clone, Debug)]
 struct IngressService {
+    socket_task: Rc<SocketTask>,
     cancellation: CancellationToken,
     config: WebIngressConfig,
     middleware: Vec<Rc<dyn WebIngressMiddleware>>,
@@ -98,16 +107,9 @@ enum ResponseBody {
 }
 
 struct StreamingBody {
-    stream: Rc<NativeStream<stream_endpoint::StreamEndpointHandle>>,
-    receive: Option<
-        futures::future::LocalBoxFuture<
-            'static,
-            Result<
-                StreamEvent<stream_endpoint::HandleResponse, stream_endpoint::HandleError>,
-                lenso_kernel::RuntimeFailure,
-            >,
-        >,
-    >,
+    stream: Rc<crate::WebIngressResponseStream>,
+    receive:
+        Option<futures::future::LocalBoxFuture<'static, Result<Option<Bytes>, RuntimeFailure>>>,
     done: bool,
 }
 
@@ -122,14 +124,16 @@ impl std::fmt::Debug for StreamingBody {
 
 impl hyper::body::Body for ResponseBody {
     type Data = Bytes;
-    type Error = Infallible;
+    type Error = std::io::Error;
 
     fn poll_frame(
         self: Pin<&mut Self>,
         context: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         match self.get_mut() {
-            Self::Buffered(body) => Pin::new(body).poll_frame(context),
+            Self::Buffered(body) => Pin::new(body)
+                .poll_frame(context)
+                .map(|frame| frame.map(|frame| frame.map_err(|never| match never {}))),
             Self::Streaming(body) => body.poll_frame(context),
         }
     }
@@ -152,7 +156,7 @@ impl hyper::body::Body for ResponseBody {
 impl StreamingBody {
     fn new(stream: NativeStream<stream_endpoint::StreamEndpointHandle>) -> Self {
         Self {
-            stream: Rc::new(stream),
+            stream: Rc::new(crate::WebIngressResponseStream::new(stream)),
             receive: None,
             done: false,
         }
@@ -161,37 +165,32 @@ impl StreamingBody {
     fn poll_frame(
         &mut self,
         context: &mut Context<'_>,
-    ) -> Poll<Option<Result<Frame<Bytes>, Infallible>>> {
-        loop {
-            if self.done {
-                return Poll::Ready(None);
+    ) -> Poll<Option<Result<Frame<Bytes>, std::io::Error>>> {
+        if self.done {
+            return Poll::Ready(None);
+        }
+        let receive = self.receive.get_or_insert_with(|| {
+            let stream = self.stream.clone();
+            Box::pin(async move { stream.receive().await })
+        });
+        let event = match receive.as_mut().poll(context) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(event) => {
+                self.receive = None;
+                event
             }
-            let receive = self.receive.get_or_insert_with(|| {
-                let stream = self.stream.clone();
-                Box::pin(async move { stream.receive().await })
-            });
-            let event = match receive.as_mut().poll(context) {
-                Poll::Pending => return Poll::Pending,
-                Poll::Ready(event) => {
-                    self.receive = None;
-                    event
-                }
-            };
-            match event {
-                Ok(StreamEvent::Message(frame))
-                    if frame.kind == stream_endpoint::HandleResponseKind::Chunk
-                        && frame.status.is_none()
-                        && frame.headers.is_none() =>
-                {
-                    let body = frame.body.unwrap_or_default().into_shared();
-                    return Poll::Ready(Some(Ok(Frame::data(body))));
-                }
-                Ok(StreamEvent::PeerHalfClosed) => {}
-                Ok(StreamEvent::Terminal(_) | StreamEvent::Message(_)) | Err(_) => {
-                    self.stream.cancel();
-                    self.done = true;
-                    return Poll::Ready(None);
-                }
+        };
+        match event {
+            Ok(Some(bytes)) => Poll::Ready(Some(Ok(Frame::data(bytes)))),
+            Ok(None) => {
+                self.done = true;
+                Poll::Ready(None)
+            }
+            Err(_) => {
+                self.done = true;
+                Poll::Ready(Some(Err(std::io::Error::other(
+                    "HTTP response stream failed",
+                ))))
             }
         }
     }
@@ -201,6 +200,10 @@ impl IngressResponse {
     fn into_response(self) -> Response<ResponseBody> {
         let body = match self.body {
             IngressBody::Buffered(body) => ResponseBody::Buffered(Full::new(body)),
+            IngressBody::WebSocket(upgrade) => {
+                upgrade.session.cancel();
+                ResponseBody::Buffered(Full::new(Bytes::new()))
+            }
             IngressBody::Streaming(stream) => ResponseBody::Streaming(StreamingBody::new(stream)),
         };
         let mut response = Response::new(body);
@@ -279,6 +282,10 @@ where
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "Connection admission and shutdown share one listener owner"
+)]
 pub(super) async fn serve(
     mut source: ConnectionSource,
     config: WebIngressConfig,
@@ -292,6 +299,7 @@ pub(super) async fn serve(
         source.request_concurrency(config.max_concurrent_requests());
     let session_cookie = config.session_cookie().map(SessionCookiePolicy::from);
     let service = IngressService {
+        socket_task: Rc::default(),
         cancellation: cancellation.clone(),
         global_concurrency,
         local_concurrency,
@@ -337,6 +345,8 @@ pub(super) async fn serve(
                 let activity = ConnectionActivity::new();
                 let mut connection_service = service.clone();
                 connection_service.activity = Some(activity.clone());
+                let socket_task = Rc::new(SocketTask::default());
+                connection_service.socket_task = socket_task.clone();
                 let mut shutdown_signal = shutdown.subscribe();
                 connections.push(tokio::task::spawn_local(async move {
                     let _connection_permit = connection_permit;
@@ -344,7 +354,8 @@ pub(super) async fn serve(
                     let shutdown_grace = connection_service.config.shutdown_grace_timeout();
                     let mut builder = auto::Builder::new(LocalExecutor);
                     configure_protocol_limits(&mut builder, &connection_service.config);
-                    let connection = builder.serve_connection(
+                    {
+                    let connection = builder.serve_connection_with_upgrades(
                         TokioIo::new(stream),
                         service_fn(move |request| connection_service.clone().call(request)),
                     );
@@ -369,6 +380,9 @@ pub(super) async fn serve(
                             ).await;
                         }
                     }
+                    }
+                    let websocket = socket_task.0.borrow_mut().take();
+                    if let Some(websocket) = websocket { websocket.await; }
                 }));
             }
             completed = connections.next(), if !connections.is_empty() => {
@@ -432,11 +446,15 @@ impl IngressService {
         mut request: Request<Incoming>,
     ) -> Result<Response<ResponseBody>, Infallible> {
         let method = request.method().clone();
+        let on_upgrade = request
+            .headers()
+            .contains_key(http::header::UPGRADE)
+            .then(|| hyper::upgrade::on(&mut request));
         let _active_request = self.activity.as_ref().map(ConnectionActivity::begin);
         mark_sensitive_headers(request.headers_mut(), self.session_cookie.as_ref());
         let request_head_len = canonical_request_head_len(&request);
         let request_id = replace_request_id(request.headers_mut(), &self.next_request_id);
-        let response = if request_head_len > self.config.max_request_head_bytes() {
+        let mut response = if request_head_len > self.config.max_request_head_bytes() {
             IngressResponse::json(
                 StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
                 r#"{"error":"request_header_fields_too_large"}"#,
@@ -462,6 +480,26 @@ impl IngressService {
                 unavailable()
             }
         };
+        if matches!(&response.body, IngressBody::WebSocket(_)) {
+            let IngressBody::WebSocket(upgrade) =
+                std::mem::replace(&mut response.body, IngressBody::Buffered(Bytes::new()))
+            else {
+                unreachable!()
+            };
+            if let (Some(on_upgrade), Some(policy)) = (on_upgrade, self.config.websocket()) {
+                *self.socket_task.0.borrow_mut() = Some(Box::pin(crate::websocket_native::run(
+                    on_upgrade,
+                    upgrade.session,
+                    self.cancellation.clone(),
+                    policy.max_message_bytes(),
+                    self.config.request_timeout(),
+                    self.config.shutdown_grace_timeout(),
+                )));
+            } else {
+                upgrade.session.cancel();
+                response = unavailable();
+            }
+        }
         Ok(with_transport_headers(
             response.normalize_body(&method).into_response(),
             request_id,

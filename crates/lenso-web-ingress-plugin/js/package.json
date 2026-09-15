@@ -1,0 +1,17 @@
+{
+  "name": "@lenso/web-ingress-workers",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "exports": "./websocket.mjs",
+  "files": [
+    "websocket.mjs",
+    "README.md"
+  ],
+  "devDependencies": {
+    "@lenso/workers-runtime": "0.1.0"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

@@ -15,9 +15,12 @@ root-slot = "http-ingress"
 
 [features]
 default = ["native"]
-native = ["dep:hyper", "dep:hyper-util", "dep:http-body-util", "tokio/net", "tokio/rt", "tokio/time"]
+native = ["dep:tokio-tungstenite", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "tokio/net", "tokio/rt", "tokio/time"]
 
 [dependencies]
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"], optional = true }
+base64 = "0.22"
+sha1 = "0.10"
 bytes = "1"
 futures.workspace = true
 http = "1"
@@ -28,6 +31,7 @@ lenso.workspace = true
 lenso-app-plan.workspace = true
 lenso-capability-http-endpoint = { version = "0.3.1", path = "../lenso-capability-http-endpoint" }
 lenso-capability-http-stream-endpoint = { version = "0.1.1", path = "../lenso-capability-http-stream-endpoint" }
+lenso-capability-websocket-endpoint = { version = "0.1.0", path = "../lenso-capability-websocket-endpoint" }
 lenso-kernel.workspace = true
 lenso-native-adapter.workspace = true
 matchit = "0.8"
@@ -36,6 +40,7 @@ serde_json.workspace = true
 tokio = { version = "1.52", default-features = false, features = ["macros", "sync"] }
 
 [dev-dependencies]
+lenso-web-duplex-fixture = { path = "../../tests/fixtures/duplex-endpoint-plugin" }
 lenso-web-http-parity-fixture = { path = "../../tests/fixtures/http-parity-plugin" }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 hyper = { version = "1", features = ["client", "http2"] }

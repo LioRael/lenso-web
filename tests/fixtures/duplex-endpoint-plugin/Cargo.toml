@@ -1,0 +1,12 @@
+[package]
+name = "lenso-web-duplex-fixture"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+[dependencies]
+futures.workspace = true
+lenso-app-plan.workspace = true
+lenso-kernel.workspace = true
+lenso-native-adapter.workspace = true
+lenso-capability-http-stream-endpoint = { path = "../../../crates/lenso-capability-http-stream-endpoint" }
+lenso-capability-websocket-endpoint = { path = "../../../crates/lenso-capability-websocket-endpoint" }

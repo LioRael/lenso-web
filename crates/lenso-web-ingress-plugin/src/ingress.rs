@@ -29,7 +29,9 @@ use std::{
     panic::AssertUnwindSafe,
     rc::Rc,
 };
-use tokio::sync::{Semaphore, oneshot};
+#[cfg(feature = "native")]
+use tokio::sync::Semaphore;
+use tokio::sync::oneshot;
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 const NOSNIFF_HEADER: HeaderName = HeaderName::from_static("x-content-type-options");
 
@@ -127,6 +129,7 @@ pub(super) struct IngressResponse {
 pub(super) enum IngressBody {
     Buffered(Bytes),
     Streaming(NativeStream<stream_endpoint::StreamEndpointHandle>),
+    WebSocket(crate::websocket::WebSocketUpgrade),
 }
 
 impl IngressResponse {
@@ -145,15 +148,12 @@ impl IngressResponse {
 }
 
 impl IngressResponse {
-    pub(super) fn into_middleware_response(
-        self,
-    ) -> (
-        WebIngressResponse,
-        Option<NativeStream<stream_endpoint::StreamEndpointHandle>>,
-    ) {
+    pub(super) fn into_middleware_response(self) -> (WebIngressResponse, Option<IngressBody>) {
         let (body, stream) = match self.body {
             IngressBody::Buffered(body) => (body, None),
-            IngressBody::Streaming(stream) => (Bytes::new(), Some(stream)),
+            body @ (IngressBody::Streaming(_) | IngressBody::WebSocket(_)) => {
+                (Bytes::new(), Some(body))
+            }
         };
         let mut response = Response::new(body);
         *response.status_mut() = self.status;
@@ -179,15 +179,35 @@ impl IngressResponse {
         }
     }
 
-    pub(super) fn with_stream(
-        mut self,
-        stream: NativeStream<stream_endpoint::StreamEndpointHandle>,
-    ) -> Self {
-        self.body = IngressBody::Streaming(stream);
+    pub(super) fn with_session(mut self, body: IngressBody) -> Self {
+        if let IngressBody::WebSocket(upgrade) = &body {
+            if self.status != StatusCode::SWITCHING_PROTOCOLS {
+                upgrade.session.cancel();
+                return self;
+            }
+            self.headers
+                .insert(http::header::UPGRADE, HeaderValue::from_static("websocket"));
+            self.headers.insert(
+                http::header::CONNECTION,
+                HeaderValue::from_static("Upgrade"),
+            );
+            self.headers.insert(
+                "sec-websocket-accept",
+                upgrade.accept_key.parse().expect("validated accept key"),
+            );
+            if let Some(protocol) = upgrade.session.protocol() {
+                self.headers.insert(
+                    "sec-websocket-protocol",
+                    protocol.parse().expect("validated protocol"),
+                );
+            }
+        }
+        self.body = body;
         self
     }
 }
 
+#[cfg(feature = "native")]
 pub(super) async fn acquire_request_permit<'a>(
     semaphore: &'a Semaphore,
     cancellation: &CancellationToken,
@@ -309,6 +329,25 @@ pub(super) fn dispatch_response(
     match result {
         Ok(DispatchResponse::Buffered(response)) => from_endpoint(response),
         Ok(DispatchResponse::Streaming(response)) => from_stream_endpoint(response),
+        Ok(DispatchResponse::WebSocket(upgrade)) => IngressResponse {
+            status: StatusCode::SWITCHING_PROTOCOLS,
+            headers: HeaderMap::new(),
+            body: IngressBody::WebSocket(upgrade),
+        },
+        Err(DispatchError::Unauthorized) => {
+            IngressResponse::json(StatusCode::UNAUTHORIZED, r#"{"error":"unauthorized"}"#)
+        }
+        Err(DispatchError::Forbidden) => {
+            IngressResponse::json(StatusCode::FORBIDDEN, r#"{"error":"forbidden"}"#)
+        }
+        Err(DispatchError::UpgradeRequired) => IngressResponse::json(
+            StatusCode::UPGRADE_REQUIRED,
+            r#"{"error":"websocket_upgrade_required"}"#,
+        ),
+        Err(DispatchError::BadHandshake) => IngressResponse::json(
+            StatusCode::BAD_REQUEST,
+            r#"{"error":"invalid_websocket_handshake"}"#,
+        ),
         Err(DispatchError::NotFound) => {
             IngressResponse::json(StatusCode::NOT_FOUND, r#"{"error":"not_found"}"#)
         }
@@ -642,12 +681,34 @@ pub(super) async fn dispatch_buffered(
     routes: Rc<RouteTable>,
     middleware: &[Rc<dyn WebIngressMiddleware>],
 ) -> IngressResponse {
-    if parts.method == Method::CONNECT || parts.headers.contains_key(UPGRADE) {
+    if parts.method == Method::CONNECT
+        || (parts.headers.contains_key(UPGRADE) && routes.websocket_policy().is_none())
+    {
         return IngressResponse::json(
             StatusCode::NOT_IMPLEMENTED,
             r#"{"error":"unsupported_interaction"}"#,
         );
     }
+    let handshake = if parts.headers.contains_key(UPGRADE) {
+        if parts.method != Method::GET
+            || parts.version != http::Version::HTTP_11
+            || !body.is_empty()
+        {
+            return bad_request();
+        }
+        match crate::websocket_handshake::Handshake::parse(
+            &parts.headers,
+            routes
+                .websocket_policy()
+                .expect("checked policy")
+                .allowed_origins(),
+        ) {
+            Ok(handshake) => Some(handshake),
+            Err(()) => return bad_request(),
+        }
+    } else {
+        None
+    };
     let (disconnect, disconnected) = oneshot::channel();
     let cancel_on_drop = CancelRequestOnDrop(Some(disconnect));
     let request = match inbound_request(
@@ -670,7 +731,7 @@ pub(super) async fn dispatch_buffered(
         let stream_slot = dispatch_stream_slot.clone();
         async move {
             let response = match request {
-                Ok(request) => dispatch_response(routes.dispatch(request).await),
+                Ok(request) => dispatch_response(routes.dispatch(request, handshake).await),
                 Err(rejection) => request_rejection(rejection),
             };
             let (response, stream) = response.into_middleware_response();
@@ -686,7 +747,7 @@ pub(super) async fn dispatch_buffered(
         let response = IngressResponse::from_middleware_response(response);
         let stream = stream_slot.borrow_mut().take();
         match stream {
-            Some(stream) => response.with_stream(stream),
+            Some(stream) => response.with_session(stream),
             None => response,
         }
     });
@@ -696,12 +757,15 @@ pub(super) async fn dispatch_buffered(
 impl IngressResponse {
     pub(super) fn normalize_body(mut self, method: &Method) -> Self {
         if method == Method::HEAD
-            || self.status.is_informational()
+            || (self.status.is_informational() && !matches!(&self.body, IngressBody::WebSocket(_)))
             || self.status == StatusCode::NO_CONTENT
             || self.status == StatusCode::NOT_MODIFIED
         {
             if let IngressBody::Streaming(stream) = &self.body {
                 stream.cancel();
+            }
+            if let IngressBody::WebSocket(upgrade) = &self.body {
+                upgrade.session.cancel();
             }
             self.body = IngressBody::Buffered(Bytes::new());
         }

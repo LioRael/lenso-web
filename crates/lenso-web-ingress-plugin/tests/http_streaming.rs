@@ -32,7 +32,7 @@ const STREAM_PACKAGE_ID: &str = "fixture.streaming-http";
 #[tokio::test(flavor = "current_thread")]
 async fn streams_response_chunks_without_buffering_the_endpoint() {
     LocalSet::new()
-        .run_until(async {
+        .run_until(Box::pin(async {
             let ingress = WebIngressFactory::default();
             let app = Kernel::start_native(
                 plan(),
@@ -60,14 +60,14 @@ async fn streams_response_chunks_without_buffering_the_endpoint() {
                 app.shutdown(Duration::from_secs(2)).await,
                 ShutdownOutcome::Clean
             );
-        })
+        }))
         .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn rejects_a_stream_that_does_not_start_with_a_response_head() {
     LocalSet::new()
-        .run_until(async {
+        .run_until(Box::pin(async {
             let ingress = WebIngressFactory::default();
             let app = Kernel::start_native(
                 plan(),
@@ -93,7 +93,7 @@ async fn rejects_a_stream_that_does_not_start_with_a_response_head() {
                 app.shutdown(Duration::from_secs(2)).await,
                 ShutdownOutcome::Clean
             );
-        })
+        }))
         .await;
 }
 
@@ -208,7 +208,13 @@ impl stream_endpoint::StreamEndpointProvider for StreamingEndpoint {
         let session = FixtureStream::new([
             head,
             message(chunk("first")),
-            message(chunk("second")),
+            if request.query.as_deref() == Some("late-failure") {
+                let mut invalid = chunk("second");
+                invalid.status = Some(200);
+                message(invalid)
+            } else {
+                message(chunk("second"))
+            },
             NativeStreamItem::Terminal(Ok(())),
         ]);
         Box::pin(futures::future::ready(Ok(
@@ -252,7 +258,10 @@ impl NativeStreamSession for FixtureStream {
 
     fn receive(&self) -> LocalBoxFuture<'static, Result<NativeStreamItem, RuntimeFailure>> {
         let frame = self.frames.borrow_mut().pop_front().unwrap();
-        Box::pin(futures::future::ready(Ok(frame)))
+        Box::pin(async move {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+            Ok(frame)
+        })
     }
 
     fn close_send(&self) -> LocalBoxFuture<'static, Result<(), RuntimeFailure>> {
@@ -265,11 +274,11 @@ impl NativeStreamSession for FixtureStream {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn event_ingress_rejects_stream_bindings_before_readiness() {
+async fn buffered_event_entrypoint_rejects_implicit_stream_collection() {
     LocalSet::new()
-        .run_until(async {
+        .run_until(Box::pin(async {
             let ingress = lenso_web_ingress_plugin::WebIngressEventFactory::new();
-            let error = Kernel::start_native(
+            let app = Kernel::start_native(
                 plan(),
                 TokioDriver::new(),
                 NativePluginRegistry::new()
@@ -277,9 +286,84 @@ async fn event_ingress_rejects_stream_bindings_before_readiness() {
                     .with_factory(ingress.clone()),
             )
             .await
-            .expect_err("event hosts must reject streaming before Ready");
-            assert!(format!("{error:?}").contains("does not support Stream Endpoint bindings"));
-            assert!(ingress.route_manifest().is_none());
-        })
+            .unwrap();
+            let error = ingress
+                .handle(
+                    http::Request::builder()
+                        .uri("/events")
+                        .body(bytes::Bytes::new())
+                        .unwrap(),
+                    lenso_kernel::CancellationToken::new(),
+                )
+                .await
+                .unwrap_err();
+            assert!(format!("{error:?}").contains("requires handle_response"));
+            assert_eq!(
+                app.shutdown(Duration::from_secs(2)).await,
+                ShutdownOutcome::Clean
+            );
+        }))
         .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn event_ingress_uses_the_same_stream_contract_and_clean_terminal() {
+    use lenso_web_ingress_plugin::{WebIngressEventBody, WebIngressEventFactory};
+    LocalSet::new()
+        .run_until(Box::pin(async {
+            let ingress = WebIngressEventFactory::new();
+            let app = Kernel::start_native(
+                plan(),
+                TokioDriver::new(),
+                NativePluginRegistry::new()
+                    .with_factory(StreamingEndpointFactory { malformed: false })
+                    .with_factory(ingress.clone()),
+            )
+            .await
+            .unwrap();
+            let response = ingress
+                .handle_response(
+                    http::Request::builder()
+                        .uri("/events")
+                        .body(bytes::Bytes::new())
+                        .unwrap(),
+                    lenso_kernel::CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            assert_eq!(response.headers()["content-type"], "text/event-stream");
+            let WebIngressEventBody::Streaming(stream) = response.into_body() else {
+                panic!("expected a stream")
+            };
+            assert_eq!(stream.receive().await.unwrap().unwrap(), "first");
+            assert_eq!(stream.receive().await.unwrap().unwrap(), "second");
+            assert!(stream.receive().await.unwrap().is_none());
+            assert!(stream.is_closed());
+            drop(stream);
+            assert_eq!(
+                app.shutdown(Duration::from_secs(2)).await,
+                ShutdownOutcome::Clean
+            );
+        }))
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn failed_stream_does_not_emit_a_successful_http_chunk_terminator() {
+    LocalSet::new().run_until(Box::pin(async {
+        let ingress = WebIngressFactory::default();
+        let app = Kernel::start_native(plan(), TokioDriver::new(),
+            NativePluginRegistry::new()
+                .with_factory(StreamingEndpointFactory { malformed: false })
+                .with_factory(ingress.clone())).await.unwrap();
+        let mut connection = TcpStream::connect(ingress.local_address().unwrap()).await.unwrap();
+        connection.write_all(b"GET /events?late-failure HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n\r\n").await.unwrap();
+        let mut response = String::new();
+        let _ = connection.read_to_string(&mut response).await;
+        assert!(response.starts_with("HTTP/1.1 200"));
+        assert!(response.contains("first"));
+        assert!(!response.ends_with("0\r\n\r\n"));
+        assert_eq!(app.shutdown(Duration::from_secs(2)).await, ShutdownOutcome::Clean);
+    })).await;
 }

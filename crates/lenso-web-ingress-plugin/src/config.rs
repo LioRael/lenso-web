@@ -84,6 +84,72 @@ impl SessionCookieConfig {
     }
 }
 
+/// Explicit WebSocket transport policy. Browser origins are exact matches.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebSocketConfig {
+    allowed_origins: Vec<String>,
+    max_message_bytes: usize,
+    max_session_bytes: usize,
+}
+impl WebSocketConfig {
+    pub fn new(allowed_origins: Vec<String>) -> Result<Self, String> {
+        let policy = Self {
+            allowed_origins,
+            max_message_bytes: 65_536,
+            max_session_bytes: 1_048_576,
+        };
+        policy.validate()?;
+        Ok(policy)
+    }
+    pub fn with_limits(
+        mut self,
+        message_bytes: usize,
+        session_bytes: usize,
+    ) -> Result<Self, String> {
+        self.max_message_bytes = message_bytes;
+        self.max_session_bytes = session_bytes;
+        self.validate()?;
+        Ok(self)
+    }
+    fn validate(&self) -> Result<(), String> {
+        if self.max_message_bytes == 0
+            || self.max_message_bytes > 1_048_576
+            || self.max_session_bytes < self.max_message_bytes
+            || self.max_session_bytes > MAX_TRANSFER_BYTES
+            || self.allowed_origins.len() > 64
+        {
+            return Err("Invalid WebSocket bounds".into());
+        }
+        for origin in &self.allowed_origins {
+            let uri: http::Uri = origin.parse().map_err(|_| "Invalid WebSocket origin")?;
+            if !matches!(uri.scheme_str(), Some("http" | "https"))
+                || uri.authority().is_none()
+                || uri
+                    .authority()
+                    .is_some_and(|authority| authority.as_str().contains('@'))
+                || uri
+                    .path_and_query()
+                    .is_some_and(|path| path.as_str() != "/")
+                || origin.ends_with('/')
+                || origin.len() > 2048
+            {
+                return Err("WebSocket origins must be exact serialized HTTP origins".into());
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn allowed_origins(&self) -> &[String] {
+        &self.allowed_origins
+    }
+    pub const fn max_message_bytes(&self) -> usize {
+        self.max_message_bytes
+    }
+    pub const fn max_session_bytes(&self) -> usize {
+        self.max_session_bytes
+    }
+}
+
 /// Immutable HTTP policy for one Web Ingress Plugin Instance.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -110,6 +176,8 @@ pub struct WebIngressConfig {
     request_timeout_millis: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     session_cookie: Option<SessionCookieConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    websocket: Option<WebSocketConfig>,
 }
 
 impl Default for WebIngressConfig {
@@ -126,11 +194,21 @@ impl Default for WebIngressConfig {
             shutdown_grace_timeout_millis: default_shutdown_grace_timeout_millis(),
             request_timeout_millis: default_request_timeout_millis(),
             session_cookie: None,
+            websocket: None,
         }
     }
 }
 
 impl WebIngressConfig {
+    pub fn with_websocket(mut self, policy: WebSocketConfig) -> Result<Self, String> {
+        policy.validate()?;
+        self.websocket = Some(policy);
+        Ok(self)
+    }
+    pub fn websocket(&self) -> Option<&WebSocketConfig> {
+        self.websocket.as_ref()
+    }
+
     /// Replaces the listener address. Loopback with port zero remains the default.
     pub fn with_bind_address(mut self, address: SocketAddr) -> Result<Self, String> {
         self.bind_address = address;
@@ -214,6 +292,9 @@ impl WebIngressConfig {
             || !(1..=MAX_TIMEOUT_MILLIS).contains(&self.request_timeout_millis)
         {
             return Err("Web Ingress limits or timeout are invalid".to_owned());
+        }
+        if let Some(policy) = &self.websocket {
+            policy.validate()?;
         }
         if let Some(policy) = &self.session_cookie {
             policy.validate()?;
