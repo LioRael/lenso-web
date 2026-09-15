@@ -13,5 +13,14 @@
   },
   "scripts": {
     "test": "node --test test/*.test.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LioRael/lenso-web.git",
+    "directory": "crates/lenso-web-ingress-plugin/js"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   }
 }
