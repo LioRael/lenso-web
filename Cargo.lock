@@ -949,9 +949,9 @@ dependencies = [
 
 [[package]]
 name = "lenso-app-plan"
-version = "0.4.1"
+version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bae6e028eab9a55cd6562e332867c3378a0d97a68cd33d3d28e4a67db100adc3"
+checksum = "e04794ca68019a2506cafd82de0dbea7c1048f7cc61c0356edfc6ee62081bfba"
 dependencies = [
  "serde",
  "serde_json",

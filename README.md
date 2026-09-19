@@ -240,7 +240,10 @@ cargo run -p lenso-web-greetings-app-example
 
 `NativeWebHost` is a Web Host preset. Inventory admits linked Factories.
 `.plugin::<T>()` selects a default Instance; `.plugin_with` / `.instance` pass
-configuration; `.factory` installs a hand-written native Factory;
+configuration; `.plugin_on_lane`, `.plugin_with_on_lane`, and
+`.instance_on_lane` record explicit Execution Lane placement;
+`.resolve_plan()` exposes the exact immutable Plan for an advanced Runner
+integration; `.factory` installs a hand-written native Factory;
 `.with_ingress_config` supplies limits, deadlines, cookies, and WebSocket policy;
 `.with_middleware` adds one Ingress middleware chain; `.with_diagnostics` adds
 one Host-owned observer for Endpoint failures; `.with_tower_middleware` /
@@ -274,10 +277,12 @@ contract tests can assert the exact immutable dispatch surface.
 The Host deliberately inherits Lenso's portable local execution lane: native
 Plugin state and Endpoint futures may be `!Send`/`!Sync`, so `start` runs on a
 Tokio `current_thread` runtime and `LocalSet`. This is not a transport
-limitation to hide with an unsafe wrapper. A future native parallel lane must be
-an explicit Kernel/Driver capability (`spawn_send`) with Plan validation; it
-must not change the portable Plugin contract or force browser/WASI Plugins to
-be thread-safe.
+limitation to hide with an unsafe wrapper. The lane authoring methods preserve
+placement in the Plan but do not spawn extra lane threads; actual replicated
+execution still belongs to `ReplicatedNativeApp` with lane-local Factories and
+Adapters. A future native parallel lane must be an explicit Kernel/Driver
+capability (`spawn_send`) with Plan validation; it must not change the portable
+Plugin contract or force browser/WASI Plugins to be thread-safe.
 
 For authenticated HTTP, Ingress selects one `Authorization` credential into
 `HandleRequest::credential`; it does not decide identity or permission. The

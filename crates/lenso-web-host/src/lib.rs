@@ -11,13 +11,20 @@
 //! `current_thread` runtime. `start` must run on a [`tokio::task::LocalSet`].
 //! [`NativeWebHost::run`] creates that set and waits for Ctrl-C.
 
-use std::{collections::BTreeMap, error::Error, fmt, net::SocketAddr, rc::Rc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    error::Error,
+    fmt,
+    net::SocketAddr,
+    rc::Rc,
+    time::Duration,
+};
 
 use bytes::Bytes;
 
 use http::{Request, Response};
 use lenso_app_plan::{
-    RequestAdmissionPlan,
+    ExecutionLanePlan, RequestAdmissionPlan,
     authoring::{
         HostBinding, HostCatalog, HostDefaultPlugin, HostPluginRelease, HostSlot, PluginDescriptor,
         PluginInstanceId, PluginRootInstance, PluginRootSnapshot, resolve_plugin_root,
@@ -197,7 +204,26 @@ impl NativeWebHost {
     #[must_use]
     pub fn plugin<P: NativePluginDefinition>(self) -> Self {
         P::link();
-        self.push_instance(P::PACKAGE_ID, INSTANCE_KEY, empty_configuration())
+        self.push_instance(P::PACKAGE_ID, INSTANCE_KEY, empty_configuration(), None)
+    }
+
+    /// Links `P` and places its default Instance on an explicit Execution Lane.
+    ///
+    /// This records placement in the Plugin Root and resolved Plan. It does not
+    /// turn [`NativeWebHost`] into a replicated runner; [`Self::start`] remains
+    /// the local single-Kernel preset.
+    #[must_use]
+    pub fn plugin_on_lane<P: NativePluginDefinition>(
+        self,
+        execution_lane: impl Into<String>,
+    ) -> Self {
+        P::link();
+        self.push_instance(
+            P::PACKAGE_ID,
+            INSTANCE_KEY,
+            empty_configuration(),
+            Some(execution_lane.into()),
+        )
     }
 
     /// Writes Plugin Root configuration for `P`'s default Instance.
@@ -214,6 +240,23 @@ impl NativeWebHost {
             P::PACKAGE_ID,
             INSTANCE_KEY,
             json_configuration(configuration)?,
+            None,
+        ))
+    }
+
+    /// Links `P`, places its default Instance on an explicit Execution Lane,
+    /// and writes the typed Plugin Root configuration overlay.
+    pub fn plugin_with_on_lane<P: NativePluginDefinition>(
+        self,
+        execution_lane: impl Into<String>,
+        configuration: impl Serialize,
+    ) -> Result<Self, WebHostError> {
+        P::link();
+        Ok(self.push_instance(
+            P::PACKAGE_ID,
+            INSTANCE_KEY,
+            json_configuration(configuration)?,
+            Some(execution_lane.into()),
         ))
     }
 
@@ -228,6 +271,23 @@ impl NativeWebHost {
             P::PACKAGE_ID,
             instance_key,
             json_configuration(configuration)?,
+            None,
+        ))
+    }
+
+    /// Links `P` and enables a named Instance on an explicit Execution Lane.
+    pub fn instance_on_lane<P: NativePluginDefinition>(
+        self,
+        instance_key: impl Into<String>,
+        execution_lane: impl Into<String>,
+        configuration: impl Serialize,
+    ) -> Result<Self, WebHostError> {
+        P::link();
+        Ok(self.push_instance(
+            P::PACKAGE_ID,
+            instance_key,
+            json_configuration(configuration)?,
+            Some(execution_lane.into()),
         ))
     }
 
@@ -244,7 +304,7 @@ impl NativeWebHost {
             descriptor,
             install: Box::new(move |registry| registry.with_factory(factory)),
         });
-        self.push_instance(package_id, INSTANCE_KEY, empty_configuration())
+        self.push_instance(package_id, INSTANCE_KEY, empty_configuration(), None)
     }
 
     /// Admits one extra Plugin Descriptor without enabling an Instance.
@@ -260,7 +320,7 @@ impl NativeWebHost {
     /// [`NativePluginDefinition`].
     #[must_use]
     pub fn enable(self, plugin_id: impl Into<String>) -> Self {
-        self.push_instance(plugin_id, INSTANCE_KEY, empty_configuration())
+        self.push_instance(plugin_id, INSTANCE_KEY, empty_configuration(), None)
     }
 
     /// Replaces the Plugin Root snapshot.
@@ -343,16 +403,20 @@ impl NativeWebHost {
         self
     }
 
-    /// Starts Ingress and returns after the App is ready.
+    /// Resolves the exact immutable Plan that this Host would start.
     ///
-    /// Must be polled on a Tokio [`LocalSet`].
-    pub async fn start(self) -> Result<RunningNativeWebHost, WebHostError> {
+    /// This is the hand-off point for an advanced Runner integration. It
+    /// includes linked Plugin Root Instances, Host defaults, automatic Ingress
+    /// bindings, and any explicit Execution Lane placement. It does not start
+    /// a Kernel or bind a listener.
+    pub fn resolve_plan(&self) -> Result<lenso_app_plan::ResolvedAppPlan, WebHostError> {
         let config = match self.bind_address {
             Some(address) => self
                 .ingress_config
+                .clone()
                 .with_bind_address(address)
                 .map_err(WebHostError::Bind)?,
-            None => self.ingress_config,
+            None => self.ingress_config.clone(),
         };
         let extra_releases = self
             .factory_installers
@@ -360,13 +424,20 @@ impl NativeWebHost {
             .map(|installer| HostPluginRelease::new(installer.descriptor.clone()))
             .chain(self.extra_releases.iter().cloned())
             .collect::<Vec<_>>();
-        let plan = resolve_web_plan(
+        resolve_web_plan(
             &config,
             &self.root,
             &self.extra_defaults,
             &self.extra_bindings,
             &extra_releases,
-        )?;
+        )
+    }
+
+    /// Starts Ingress and returns after the App is ready.
+    ///
+    /// Must be polled on a Tokio [`LocalSet`].
+    pub async fn start(self) -> Result<RunningNativeWebHost, WebHostError> {
+        let plan = self.resolve_plan()?;
         let mut ingress = self
             .middleware
             .into_iter()
@@ -406,26 +477,7 @@ impl NativeWebHost {
     /// middleware, and response mapping as the native listener without binding
     /// a TCP socket. It is intended for contract tests and embedded Hosts.
     pub async fn start_event(self) -> Result<RunningEventWebHost, WebHostError> {
-        let config = match self.bind_address {
-            Some(address) => self
-                .ingress_config
-                .with_bind_address(address)
-                .map_err(WebHostError::Bind)?,
-            None => self.ingress_config,
-        };
-        let extra_releases = self
-            .factory_installers
-            .iter()
-            .map(|installer| HostPluginRelease::new(installer.descriptor.clone()))
-            .chain(self.extra_releases.iter().cloned())
-            .collect::<Vec<_>>();
-        let plan = resolve_web_plan(
-            &config,
-            &self.root,
-            &self.extra_defaults,
-            &self.extra_bindings,
-            &extra_releases,
-        )?;
+        let plan = self.resolve_plan()?;
         let mut ingress = self
             .middleware
             .into_iter()
@@ -470,21 +522,29 @@ impl NativeWebHost {
         plugin_id: impl Into<String>,
         instance_key: impl Into<String>,
         configuration: Value,
+        execution_lane: Option<String>,
     ) -> Self {
         let plugin_id = plugin_id.into();
         let instance_key = instance_key.into();
         let dependency_selection_adopted = self.root.dependency_selection_adopted();
         let dependency_choices = self.root.dependency_choices().to_vec();
+        let mut replacement = PluginRootInstance::new(plugin_id.clone(), instance_key.clone())
+            .with_configuration(configuration);
         let mut instances = self.root.instances().to_vec();
         if let Some(existing) = instances.iter_mut().find(|instance| {
             instance.id().plugin_id() == plugin_id && instance.id().instance_key() == instance_key
         }) {
-            *existing =
-                PluginRootInstance::new(plugin_id, instance_key).with_configuration(configuration);
+            if let Some(lane) = execution_lane.as_deref() {
+                replacement = replacement.with_execution_lane(lane);
+            } else if let Some(lane) = existing.execution_lane() {
+                replacement = replacement.with_execution_lane(lane);
+            }
+            *existing = replacement;
         } else {
-            instances.push(
-                PluginRootInstance::new(plugin_id, instance_key).with_configuration(configuration),
-            );
+            if let Some(lane) = execution_lane {
+                replacement = replacement.with_execution_lane(lane);
+            }
+            instances.push(replacement);
         }
         let mut root = PluginRootSnapshot::new(
             self.root.releases().to_vec(),
@@ -734,7 +794,19 @@ fn resolve_web_plan(
     }
     bindings.extend(extra_bindings.iter().cloned());
 
-    let host = HostCatalog::new(slots, releases, defaults).with_bindings(bindings);
+    let mut execution_lanes = BTreeSet::from(["main".to_owned()]);
+    for instance in root.instances() {
+        if let Some(execution_lane) = instance.execution_lane() {
+            execution_lanes.insert(execution_lane.to_owned());
+        }
+    }
+    let execution_lanes = execution_lanes
+        .into_iter()
+        .map(ExecutionLanePlan::new)
+        .collect();
+    let host = HostCatalog::new(slots, releases, defaults)
+        .with_execution_lanes(execution_lanes)
+        .with_bindings(bindings);
     resolve_plugin_root(&host, root)
         .map(|resolved| resolved.plan().clone())
         .map_err(|error| WebHostError::Plan(error.to_string()))
@@ -1065,6 +1137,27 @@ connection: close\r\n\
 
         assert!(host.root.dependency_selection_adopted());
         assert!(host.root.dependency_choices().is_empty());
+    }
+
+    #[test]
+    fn lane_authoring_is_preserved_in_the_resolved_web_plan() {
+        let host = NativeWebHost::new().plugin_on_lane::<GreetingsHttp>("web");
+        let plan = host.resolve_plan().unwrap();
+
+        assert_eq!(
+            plan.plugin_instances()
+                .iter()
+                .find(|instance| instance.package_id() == GreetingsHttp::PACKAGE_ID)
+                .unwrap()
+                .execution_lane()
+                .as_str(),
+            "web"
+        );
+        assert!(
+            plan.execution_lanes()
+                .iter()
+                .any(|lane| lane.id().as_str() == "web")
+        );
     }
 
     #[test]

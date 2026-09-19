@@ -31,7 +31,7 @@ bytes = "1.12"
 futures = "0.3"
 http = "1"
 lenso = { version = "0.5.21" }
-lenso-app-plan = { version = "0.4.1" }
+lenso-app-plan = { version = "0.4.3" }
 lenso-contract-authoring = { version = "0.1.1" }
 lenso-contract-runtime = { version = "0.2.0" }
 lenso-kernel = { version = "0.3.6" }
