@@ -38,7 +38,7 @@ pub struct GreetingsHttp {
 }
 
 #[endpoint]
-#[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
+#[allow(unknown_lints, clippy::unused_async, clippy::unused_async_trait_impl)]
 impl GreetingsHttp {
     #[post("greetings.create", "/greetings")]
     async fn create(
