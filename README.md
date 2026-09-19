@@ -506,11 +506,18 @@ configuration:
 ```rust,no_run
 let coordinator = WebIngressListenerCoordinator::bind(config, lane_count).await?;
 let factories = (0..lane_count)
-    .map(|_| WebIngressFactory::replicated(&coordinator).map(|factory| {
-        factory.with_middleware(AccessLog)
-    }))
+    .map(|lane_index| {
+        WebIngressFactory::replicated_at(&coordinator, lane_index).map(|factory| {
+            factory.with_middleware(AccessLog)
+        })
+    })
     .collect::<Result<Vec<_>, _>>()?;
 ```
+
+`replicated_at` is preferred when a Runner builds lane-local factories: the
+explicit slot keeps a lane mapped to the same replica even when lane threads
+start in a different order. `replicated` remains available for sequential
+factory construction and allocates the next free slot.
 
 The coordinator is only the transport fan-out. The native Runner must start
 `lenso_runner::ReplicatedNativeApp` with one lane-local

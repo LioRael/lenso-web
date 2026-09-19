@@ -18,6 +18,7 @@ use crate::WebIngressRouteManifest;
 
 #[derive(Debug)]
 struct ReplicaSlot {
+    allocated: bool,
     manifest: Option<WebIngressReplicaManifest>,
     connections: Option<mpsc::Sender<ReplicaConnection>>,
 }
@@ -101,6 +102,7 @@ impl WebIngressListenerCoordinator {
             state: Mutex::new(CoordinatorState {
                 slots: (0..replica_count)
                     .map(|_| ReplicaSlot {
+                        allocated: false,
                         manifest: None,
                         connections: None,
                     })
@@ -131,18 +133,31 @@ impl WebIngressListenerCoordinator {
         &self,
     ) -> Result<WebIngressReplica, lenso_kernel::RuntimeFailure> {
         let slot = self.inner.next_slot.fetch_add(1, Ordering::Relaxed);
-        let slot_count = self
+        self.allocate_replica_at(slot)
+    }
+
+    pub(crate) fn allocate_replica_at(
+        &self,
+        slot: usize,
+    ) -> Result<WebIngressReplica, lenso_kernel::RuntimeFailure> {
+        let mut state = self
             .inner
             .state
             .lock()
-            .expect("Web Ingress coordinator state is not poisoned")
-            .slots
-            .len();
-        if slot >= slot_count {
-            return Err(plugin_failure(format!(
+            .expect("Web Ingress coordinator state is not poisoned");
+        let slot_count = state.slots.len();
+        let replica = state.slots.get_mut(slot).ok_or_else(|| {
+            plugin_failure(format!(
                 "Web Ingress listener coordinator expected {slot_count} replicas"
+            ))
+        })?;
+        if replica.allocated {
+            return Err(plugin_failure(format!(
+                "Web Ingress listener coordinator replica slot {slot} is already allocated"
             )));
         }
+        replica.allocated = true;
+        drop(state);
         Ok(WebIngressReplica {
             coordinator: self.clone(),
             slot,
@@ -427,6 +442,19 @@ mod tests {
         assert_eq!(first, reordered);
         first.ensure_equivalent(&reordered).unwrap();
         assert!(first.ensure_equivalent(&shard).is_err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn coordinator_allocates_explicit_replica_slots_once() {
+        let coordinator = WebIngressListenerCoordinator::bind(WebIngressConfig::default(), 2)
+            .await
+            .unwrap();
+        coordinator.allocate_replica_at(1).unwrap();
+        let duplicate = coordinator.allocate_replica_at(1).unwrap_err();
+        assert!(format!("{duplicate:?}").contains("slot 1 is already allocated"));
+        coordinator.allocate_replica_at(0).unwrap();
+        let out_of_range = coordinator.allocate_replica_at(2).unwrap_err();
+        assert!(format!("{out_of_range:?}").contains("expected 2 replicas"));
     }
 
     #[tokio::test(flavor = "current_thread")]

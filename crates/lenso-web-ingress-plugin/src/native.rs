@@ -65,6 +65,24 @@ impl WebIngressFactory {
         })
     }
 
+    /// Creates one lane replica at an explicit coordinator slot.
+    ///
+    /// Explicit slots make lane-to-replica placement deterministic when a Runner
+    /// constructs factories from concurrent lane threads. Each slot can be
+    /// allocated only once.
+    pub fn replicated_at(
+        coordinator: &WebIngressListenerCoordinator,
+        replica_index: usize,
+    ) -> Result<Self, RuntimeFailure> {
+        let replica = coordinator.allocate_replica_at(replica_index)?;
+        Ok(Self {
+            diagnostics: Rc::new(diagnostics::NoopDiagnostics),
+            middleware: Vec::new(),
+            observer: Rc::new(WebIngressState::default()),
+            replica: Some(replica),
+        })
+    }
+
     /// Adds one global network middleware in deterministic declaration order.
     #[must_use]
     pub fn with_middleware(mut self, middleware: impl WebIngressMiddleware + 'static) -> Self {
