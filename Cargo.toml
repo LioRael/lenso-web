@@ -38,7 +38,7 @@ lenso-kernel = { version = "0.3.6" }
 lenso-native-adapter = { version = "0.3.14" }
 lenso-native-adapter-macros = "0.2.5"
 lenso-plugin-authoring = { version = "0.2.0" }
-lenso-runner = { version = "0.2.13" }
+lenso-runner = { version = "0.2.16" }
 proc-macro2 = "1.0"
 quote = "1.0"
 reqwest = { version = "0.13.4", default-features = false, features = ["http2", "rustls"] }

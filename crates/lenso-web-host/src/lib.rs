@@ -17,6 +17,7 @@ use std::{
     fmt,
     net::SocketAddr,
     rc::Rc,
+    sync::Arc,
     time::Duration,
 };
 
@@ -24,24 +25,32 @@ use bytes::Bytes;
 
 use http::{Request, Response};
 use lenso_app_plan::{
-    ExecutionLanePlan, RequestAdmissionPlan,
+    ExecutionLaneId, ExecutionLanePlan, RequestAdmissionPlan,
     authoring::{
         HostBinding, HostCatalog, HostDefaultPlugin, HostPluginRelease, HostSlot, PluginDescriptor,
         PluginInstanceId, PluginRootInstance, PluginRootSnapshot, resolve_plugin_root,
     },
 };
-use lenso_capability_http_endpoint::CAPABILITY_ID as HTTP_ENDPOINT;
-use lenso_capability_http_stream_endpoint::CAPABILITY_ID as STREAM_ENDPOINT;
-use lenso_capability_websocket_endpoint::CAPABILITY_ID as WEBSOCKET_ENDPOINT;
+use lenso_capability_http_endpoint::{
+    CAPABILITY_ID as HTTP_ENDPOINT, EndpointDescribe, EndpointHandle,
+};
+use lenso_capability_http_stream_endpoint::{
+    CAPABILITY_ID as STREAM_ENDPOINT, StreamEndpointDescribe, StreamEndpointHandle,
+};
+use lenso_capability_websocket_endpoint::{
+    CAPABILITY_ID as WEBSOCKET_ENDPOINT, EndpointConnectWebsocket, EndpointDescribeWebsocket,
+};
 use lenso_kernel::{
     CancellationToken, ExecutionAdapter, ExecutionAdapterCatalog, ExecutionAdapterCatalogError,
     Kernel, NativeApp, RuntimeFailure, ShutdownOutcome,
 };
 use lenso_native_adapter::{NativePluginDefinition, NativePluginFactory, NativePluginRegistry};
-use lenso_runner::TokioDriver;
+use lenso_runner::{
+    CrossLaneTransferCatalog, ReplicatedNativeApp, ReplicatedRunnerError, TokioDriver,
+};
 use lenso_web_ingress_plugin::{
     PACKAGE_ID as INGRESS_PACKAGE_ID, WebIngressConfig, WebIngressEventFactory, WebIngressFactory,
-    WebIngressMiddleware, WebIngressRequest, WebIngressResponse,
+    WebIngressListenerCoordinator, WebIngressMiddleware, WebIngressRequest, WebIngressResponse,
 };
 pub use lenso_web_ingress_plugin::{
     WebIngressDiagnostics, WebIngressEndpointFailure, WebIngressEventBody, WebIngressRouteManifest,
@@ -52,6 +61,16 @@ use tokio::task::LocalSet;
 use tower::{Layer, Service};
 
 const INSTANCE_KEY: &str = "default";
+
+type ReplicatedIngressBuilder =
+    Arc<dyn Fn(&ExecutionLaneId, WebIngressFactory) -> WebIngressFactory + Send + Sync>;
+type ReplicatedLaneBuilder = Arc<
+    dyn Fn(&ExecutionLaneId, NativePluginRegistry) -> Result<ExecutionAdapterCatalog, String>
+        + Send
+        + Sync,
+>;
+type ReplicatedTransferBuilder =
+    Arc<dyn Fn(CrossLaneTransferCatalog) -> CrossLaneTransferCatalog + Send + Sync>;
 
 /// Decision returned by a [`TowerIngressMiddleware`] policy service.
 #[derive(Debug)]
@@ -139,6 +158,10 @@ pub struct NativeWebHost {
     middleware: Vec<Rc<dyn WebIngressMiddleware>>,
     diagnostics: Option<Rc<dyn WebIngressDiagnostics>>,
     extra_adapters: Vec<Rc<dyn ExecutionAdapter>>,
+    replicated_ingress: Option<ReplicatedIngressBuilder>,
+    replicated_lane: Option<ReplicatedLaneBuilder>,
+    replicated_transfers: Option<ReplicatedTransferBuilder>,
+    replicated_ready_timeout: Option<Duration>,
 }
 
 struct FactoryInstaller {
@@ -168,6 +191,10 @@ impl fmt::Debug for NativeWebHost {
             .field("middleware", &self.middleware.len())
             .field("diagnostics", &self.diagnostics.is_some())
             .field("extra_adapters", &self.extra_adapters.len())
+            .field("replicated_ingress", &self.replicated_ingress.is_some())
+            .field("replicated_lane", &self.replicated_lane.is_some())
+            .field("replicated_transfers", &self.replicated_transfers.is_some())
+            .field("replicated_ready_timeout", &self.replicated_ready_timeout)
             .finish()
     }
 }
@@ -403,6 +430,58 @@ impl NativeWebHost {
         self
     }
 
+    /// Customizes the Ingress factory independently for each replicated lane.
+    ///
+    /// The builder runs inside the lane thread and must construct only lane-local
+    /// state. Capture immutable configuration in a `Send + Sync` value rather than
+    /// sharing an `Rc`-backed middleware instance between lanes.
+    #[must_use]
+    pub fn with_replicated_ingress<F>(mut self, builder: F) -> Self
+    where
+        F: Fn(&ExecutionLaneId, WebIngressFactory) -> WebIngressFactory + Send + Sync + 'static,
+    {
+        self.replicated_ingress = Some(Arc::new(builder));
+        self
+    }
+
+    /// Customizes the lane-local native registry and Execution Adapter catalog.
+    ///
+    /// The registry already contains the lane's replicated Web Ingress factory and
+    /// every inventory-linked native factory. Return the complete catalog for the
+    /// lane; native-only Hosts can omit this builder and use the built-in catalog.
+    #[must_use]
+    pub fn with_replicated_lane<F>(mut self, builder: F) -> Self
+    where
+        F: Fn(&ExecutionLaneId, NativePluginRegistry) -> Result<ExecutionAdapterCatalog, String>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.replicated_lane = Some(Arc::new(builder));
+        self
+    }
+
+    /// Extends the built-in cross-lane HTTP transfer catalog.
+    ///
+    /// Web Host registers buffered HTTP, streaming HTTP, and WebSocket Endpoint
+    /// transfers by default. Use this callback to add application Capabilities;
+    /// returning the supplied catalog unchanged is the safe default.
+    #[must_use]
+    pub fn with_replicated_transfers<F>(mut self, builder: F) -> Self
+    where
+        F: Fn(CrossLaneTransferCatalog) -> CrossLaneTransferCatalog + Send + Sync + 'static,
+    {
+        self.replicated_transfers = Some(Arc::new(builder));
+        self
+    }
+
+    /// Sets the bounded Ready deadline for a replicated App Generation.
+    #[must_use]
+    pub fn with_replicated_ready_timeout(mut self, timeout: Duration) -> Self {
+        self.replicated_ready_timeout = Some(timeout);
+        self
+    }
+
     /// Resolves the exact immutable Plan that this Host would start.
     ///
     /// This is the hand-off point for an advanced Runner integration. It
@@ -410,6 +489,17 @@ impl NativeWebHost {
     /// bindings, and any explicit Execution Lane placement. It does not start
     /// a Kernel or bind a listener.
     pub fn resolve_plan(&self) -> Result<lenso_app_plan::ResolvedAppPlan, WebHostError> {
+        self.resolve_plan_with_replication(false)
+    }
+
+    fn resolve_replicated_plan(&self) -> Result<lenso_app_plan::ResolvedAppPlan, WebHostError> {
+        self.resolve_plan_with_replication(true)
+    }
+
+    fn resolve_plan_with_replication(
+        &self,
+        replicated: bool,
+    ) -> Result<lenso_app_plan::ResolvedAppPlan, WebHostError> {
         let config = match self.bind_address {
             Some(address) => self
                 .ingress_config
@@ -430,6 +520,7 @@ impl NativeWebHost {
             &self.extra_defaults,
             &self.extra_bindings,
             &extra_releases,
+            replicated,
         )
     }
 
@@ -468,6 +559,112 @@ impl NativeWebHost {
             app,
             address,
             ingress,
+        })
+    }
+
+    /// Starts one Kernel lane for every Execution Lane in the resolved Plan.
+    ///
+    /// The listener is bound once, each lane receives a deterministic Ingress
+    /// replica slot, and inventory-linked native Plugins are discovered inside
+    /// each lane-local registry. Ordinary [`Self::start`] remains the simpler
+    /// single-Kernel path.
+    pub async fn start_replicated(self) -> Result<RunningReplicatedWebHost, WebHostError> {
+        if !self.factory_installers.is_empty() {
+            return Err(WebHostError::ReplicationUnsupported(
+                "hand-written factories from factory() are single-lane; install one per lane with with_replicated_lane",
+            ));
+        }
+        if !self.middleware.is_empty() || self.diagnostics.is_some() {
+            return Err(WebHostError::ReplicationUnsupported(
+                "Ingress middleware and diagnostics require with_replicated_ingress",
+            ));
+        }
+        if !self.extra_adapters.is_empty() {
+            return Err(WebHostError::ReplicationUnsupported(
+                "Execution Adapters require with_replicated_lane",
+            ));
+        }
+
+        let mut host = self;
+        let initial_plan = host.resolve_replicated_plan()?;
+        let config = match host.bind_address {
+            Some(address) => host
+                .ingress_config
+                .clone()
+                .with_bind_address(address)
+                .map_err(WebHostError::Bind)?,
+            None => host.ingress_config.clone(),
+        };
+        let replica_configuration =
+            serde_json::to_value(&config).map_err(|error| WebHostError::Plan(error.to_string()))?;
+        for lane in initial_plan.execution_lanes() {
+            if lane.id().as_str() == "main" {
+                continue;
+            }
+            host = host.push_instance(
+                INGRESS_PACKAGE_ID,
+                format!("replica-{}", lane.id()),
+                replica_configuration.clone(),
+                Some(lane.id().to_string()),
+            );
+        }
+        let plan = host.resolve_replicated_plan()?;
+        let lane_indexes = plan
+            .execution_lanes()
+            .iter()
+            .enumerate()
+            .map(|(index, lane)| (lane.id().clone(), index))
+            .collect::<BTreeMap<_, _>>();
+        let lane_count = lane_indexes.len();
+        let coordinator = WebIngressListenerCoordinator::bind(config, lane_count)
+            .await
+            .map_err(WebHostError::Runtime)?;
+        let running_coordinator = coordinator.clone();
+        let ingress_builder = host
+            .replicated_ingress
+            .unwrap_or_else(|| Arc::new(|_, ingress| ingress));
+        let lane_builder = host.replicated_lane.unwrap_or_else(|| {
+            Arc::new(|_, registry| Ok(ExecutionAdapterCatalog::single(registry)))
+        });
+        let ready_timeout = host.replicated_ready_timeout;
+        let transfers = host
+            .replicated_transfers
+            .map_or_else(default_replicated_transfers, |builder| {
+                builder(default_replicated_transfers())
+            });
+        let lane_builder_fn =
+            move |lane: &ExecutionLaneId| -> Result<ExecutionAdapterCatalog, String> {
+                let replica_index = lane_indexes.get(lane).copied().ok_or_else(|| {
+                    format!("replicated Web Host received an undeclared Execution Lane `{lane}`")
+                })?;
+                let ingress = WebIngressFactory::replicated_at(&coordinator, replica_index)
+                    .map_err(|error| {
+                        format!("could not allocate Web Ingress replica: {error:?}")
+                    })?;
+                let ingress = ingress_builder(lane, ingress);
+                let registry = NativePluginRegistry::new()
+                    .with_factory(ingress)
+                    .with_linked_factories();
+                lane_builder(lane, registry)
+            };
+        let app = match ready_timeout {
+            Some(timeout) => ReplicatedNativeApp::start_with_fallible_transfer_catalog(
+                plan,
+                lane_builder_fn,
+                transfers,
+                Some(timeout),
+            ),
+            None => ReplicatedNativeApp::start_with_fallible_transfer_catalog(
+                plan,
+                lane_builder_fn,
+                transfers,
+                None,
+            ),
+        }
+        .map_err(WebHostError::Replicated)?;
+        Ok(RunningReplicatedWebHost {
+            app,
+            coordinator: running_coordinator,
         })
     }
 
@@ -517,6 +714,19 @@ impl NativeWebHost {
             .await
     }
 
+    /// Starts the replicated App on a private [`LocalSet`] and shuts down on Ctrl-C.
+    pub async fn run_replicated(self) -> Result<(), WebHostError> {
+        LocalSet::new()
+            .run_until(async move {
+                let running = self.start_replicated().await?;
+                tokio::signal::ctrl_c()
+                    .await
+                    .map_err(|error| WebHostError::Bind(error.to_string()))?;
+                running.shutdown().await
+            })
+            .await
+    }
+
     fn push_instance(
         mut self,
         plugin_id: impl Into<String>,
@@ -556,6 +766,58 @@ impl NativeWebHost {
         }
         self.root = root;
         self
+    }
+}
+
+/// A replicated Web App sharing one listener across its Plan-declared lanes.
+#[derive(Debug)]
+pub struct RunningReplicatedWebHost {
+    app: ReplicatedNativeApp,
+    coordinator: WebIngressListenerCoordinator,
+}
+
+impl RunningReplicatedWebHost {
+    /// Returns the one listener address shared by every lane.
+    #[must_use]
+    pub fn address(&self) -> SocketAddr {
+        self.coordinator.local_address()
+    }
+
+    /// Returns the number of Kernel lanes started from the resolved Plan.
+    #[must_use]
+    pub fn lane_count(&self) -> usize {
+        self.app.lane_count()
+    }
+
+    /// Returns structural lane placement diagnostics from the Runner.
+    #[must_use]
+    pub fn diagnostics_snapshot(&self) -> lenso_runner::LaneDiagnosticsSnapshot {
+        self.app.diagnostics_snapshot()
+    }
+
+    /// Returns whether any lane has reached a terminal failure.
+    #[must_use]
+    pub fn is_failed(&self) -> bool {
+        self.app.is_failed()
+    }
+
+    /// Returns the first terminal Runner failure, when one has occurred.
+    #[must_use]
+    pub fn terminal_failure(&self) -> Option<ReplicatedRunnerError> {
+        self.app.terminal_failure()
+    }
+
+    /// Waits for the replicated App Generation to become terminal.
+    pub async fn wait_for_terminal(&self) -> ReplicatedRunnerError {
+        self.app.wait_for_terminal().await
+    }
+
+    /// Stops every lane and the shared listener with one bounded timeout.
+    pub async fn shutdown(self) -> Result<(), WebHostError> {
+        self.app
+            .shutdown(Duration::from_secs(3))
+            .await
+            .map_err(WebHostError::Replicated)
     }
 }
 
@@ -654,6 +916,10 @@ pub enum WebHostError {
     Adapter(ExecutionAdapterCatalogError),
     /// Shutdown did not finish cleanly.
     Shutdown(ShutdownOutcome),
+    /// A replicated Host cannot safely replay a single-lane runtime value.
+    ReplicationUnsupported(&'static str),
+    /// Replicated Runner startup or shutdown failed.
+    Replicated(ReplicatedRunnerError),
 }
 
 impl fmt::Display for WebHostError {
@@ -675,11 +941,28 @@ impl fmt::Display for WebHostError {
             Self::Shutdown(outcome) => {
                 write!(formatter, "Web Host did not shut down cleanly: {outcome:?}")
             }
+            Self::ReplicationUnsupported(detail) => {
+                write!(
+                    formatter,
+                    "replicated Web Host configuration is unsupported: {detail}"
+                )
+            }
+            Self::Replicated(error) => write!(formatter, "replicated Web Host failed: {error:?}"),
         }
     }
 }
 
 impl Error for WebHostError {}
+
+fn default_replicated_transfers() -> CrossLaneTransferCatalog {
+    CrossLaneTransferCatalog::new()
+        .with_request::<EndpointDescribe>(&["describe"])
+        .with_request::<EndpointHandle>(&["handle"])
+        .with_request::<StreamEndpointDescribe>(&["describe_stream"])
+        .with_stream::<StreamEndpointHandle>(&["handle_stream"])
+        .with_request::<EndpointDescribeWebsocket>(&["describe_websocket"])
+        .with_stream::<EndpointConnectWebsocket>(&["connect_websocket"])
+}
 
 fn empty_configuration() -> Value {
     Value::Object(serde_json::Map::new())
@@ -719,6 +1002,7 @@ fn resolve_web_plan(
     extra_defaults: &[HostDefaultPlugin],
     extra_bindings: &[HostBinding],
     extra_releases: &[HostPluginRelease],
+    replicated: bool,
 ) -> Result<lenso_app_plan::ResolvedAppPlan, WebHostError> {
     let discovered = NativePluginRegistry::host_catalog([], []).map_err(WebHostError::Runtime)?;
     let ingress = WebIngressFactory::plugin_descriptor();
@@ -742,8 +1026,11 @@ fn resolve_web_plan(
             .entry(release.descriptor().root_slot().to_owned())
             .or_insert(0) += 1;
     }
+    let ingress_slot = ingress.root_slot().to_owned();
     let slots = slot_counts.into_iter().map(|(id, count)| {
-        if count == 1 {
+        if replicated && id == ingress_slot {
+            HostSlot::many(id)
+        } else if count == 1 {
             HostSlot::one(id)
         } else {
             HostSlot::many(id)
@@ -773,24 +1060,31 @@ fn resolve_web_plan(
 
     let (queue_capacity, max_concurrency) = config.endpoint_admission_limits();
     let admission = RequestAdmissionPlan::new(queue_capacity, max_concurrency);
-    let ingress_id = PluginInstanceId::new(INGRESS_PACKAGE_ID, INSTANCE_KEY);
-    let mut bindings = vec![
-        HostBinding::to_instances(ingress_id.clone(), HTTP_ENDPOINT, http_ids)
-            .with_admission(admission),
-    ];
+    let ingress_ids = enabled_ids
+        .iter()
+        .filter(|id| id.plugin_id() == INGRESS_PACKAGE_ID)
+        .cloned()
+        .collect::<Vec<_>>();
     let stream_ids = endpoint_ids_for(&enabled_ids, &releases, STREAM_ENDPOINT);
-    if !stream_ids.is_empty() {
-        bindings.push(
-            HostBinding::to_instances(ingress_id.clone(), STREAM_ENDPOINT, stream_ids)
-                .with_admission(admission),
-        );
-    }
     let websocket_ids = endpoint_ids_for(&enabled_ids, &releases, WEBSOCKET_ENDPOINT);
-    if !websocket_ids.is_empty() {
+    let mut bindings = Vec::new();
+    for ingress_id in ingress_ids {
         bindings.push(
-            HostBinding::to_instances(ingress_id, WEBSOCKET_ENDPOINT, websocket_ids)
+            HostBinding::to_instances(ingress_id.clone(), HTTP_ENDPOINT, http_ids.clone())
                 .with_admission(admission),
         );
+        if !stream_ids.is_empty() {
+            bindings.push(
+                HostBinding::to_instances(ingress_id.clone(), STREAM_ENDPOINT, stream_ids.clone())
+                    .with_admission(admission),
+            );
+        }
+        if !websocket_ids.is_empty() {
+            bindings.push(
+                HostBinding::to_instances(ingress_id, WEBSOCKET_ENDPOINT, websocket_ids.clone())
+                    .with_admission(admission),
+            );
+        }
     }
     bindings.extend(extra_bindings.iter().cloned());
 
@@ -879,6 +1173,46 @@ connection: close\r\n\
                 running.shutdown().await.unwrap();
             })
             .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn replicated_host_serves_a_linked_endpoint_on_one_lane() {
+        let running = NativeWebHost::new()
+            .plugin::<GreetingsHttp>()
+            .bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .start_replicated()
+            .await
+            .unwrap();
+        assert_eq!(running.lane_count(), 1);
+        let response = post_greeting(running.address()).await;
+        assert!(
+            response.starts_with("HTTP/1.1 201"),
+            "unexpected response: {response:?}"
+        );
+        assert!(!running.is_failed());
+        running.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn replicated_host_starts_declared_execution_lanes() {
+        let running = NativeWebHost::new()
+            .plugin_on_lane::<GreetingsHttp>("web")
+            .bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .with_replicated_ready_timeout(Duration::from_secs(3))
+            .start_replicated()
+            .await
+            .unwrap();
+        assert_eq!(running.lane_count(), 2);
+        let response =
+            tokio::time::timeout(Duration::from_secs(3), post_greeting(running.address()))
+                .await
+                .expect("cross-lane HTTP request should complete");
+        assert!(
+            response.starts_with("HTTP/1.1 201"),
+            "unexpected response: {response:?}"
+        );
+        assert!(!running.is_failed());
+        running.shutdown().await.unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1169,6 +1503,7 @@ connection: close\r\n\
             &[],
             &[],
             &[],
+            false,
         )
         .unwrap_err();
         assert!(matches!(error, WebHostError::MissingEndpoint));
@@ -1189,6 +1524,7 @@ connection: close\r\n\
             &[],
             &[],
             &[],
+            false,
         )
         .unwrap_err();
         assert!(matches!(error, WebHostError::MissingEndpoint));

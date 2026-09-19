@@ -243,12 +243,17 @@ cargo run -p lenso-web-greetings-app-example
 configuration; `.plugin_on_lane`, `.plugin_with_on_lane`, and
 `.instance_on_lane` record explicit Execution Lane placement;
 `.resolve_plan()` exposes the exact immutable Plan for an advanced Runner
-integration; `.factory` installs a hand-written native Factory;
+integration; `.factory` installs a hand-written native Factory for the single-lane path;
 `.with_ingress_config` supplies limits, deadlines, cookies, and WebSocket policy;
 `.with_middleware` adds one Ingress middleware chain; `.with_diagnostics` adds
 one Host-owned observer for Endpoint failures; `.with_tower_middleware` /
 `.with_tower_layer` adapt a Tower pre-dispatch policy; `.with_adapter` adds
-Bun/WASI/process Adapters. Ingress is a Host default.
+Bun/WASI/process Adapters. `.with_replicated_ingress` creates lane-local
+Ingress customization; `.with_replicated_lane` creates the complete
+lane-local native registry and Adapter catalog; `.with_replicated_ready_timeout`
+sets the replicated Ready deadline; `.start_replicated` binds one shared listener
+and starts one Kernel per declared lane; `.run_replicated` adds the private
+`LocalSet` and Ctrl-C lifecycle. Ingress is a Host default.
 Enabled HTTP, stream, and WebSocket Endpoint providers are bound to it.
 The middleware chain and diagnostics observer are shared by native and
 `start_event` Hosts. Middleware runs after transport normalization and unwinds
@@ -276,13 +281,13 @@ contract tests can assert the exact immutable dispatch surface.
 
 The Host deliberately inherits Lenso's portable local execution lane: native
 Plugin state and Endpoint futures may be `!Send`/`!Sync`, so `start` runs on a
-Tokio `current_thread` runtime and `LocalSet`. This is not a transport
-limitation to hide with an unsafe wrapper. The lane authoring methods preserve
-placement in the Plan but do not spawn extra lane threads; actual replicated
-execution still belongs to `ReplicatedNativeApp` with lane-local Factories and
-Adapters. A future native parallel lane must be an explicit Kernel/Driver
-capability (`spawn_send`) with Plan validation; it must not change the portable
-Plugin contract or force browser/WASI Plugins to be thread-safe.
+Tokio `current_thread` runtime and `LocalSet`. `start_replicated` preserves that
+boundary by letting `ReplicatedNativeApp` own one current-thread Kernel per
+Plan-declared lane. It builds the Ingress factory and inventory-linked native
+registry inside each lane, then uses `WebIngressListenerCoordinator` for one
+shared listener. Lane-local custom middleware, hand-written Factories, and
+non-native Adapters must be created through the `with_replicated_*` builders;
+ordinary single-lane `Rc` values are rejected rather than shared unsafely.
 
 For authenticated HTTP, Ingress selects one `Authorization` credential into
 `HandleRequest::credential`; it does not decide identity or permission. The
@@ -519,12 +524,39 @@ explicit slot keeps a lane mapped to the same replica even when lane threads
 start in a different order. `replicated` remains available for sequential
 factory construction and allocates the next free slot.
 
-The coordinator is only the transport fan-out. The native Runner must start
-`lenso_runner::ReplicatedNativeApp` with one lane-local
-`ExecutionAdapterCatalog` per declared lane and the same resolved Plan.
-`NativeWebHost` is intentionally the single-lane preset; do not call
-`NativeWebHost::start()` once per lane, because that would create independent
-listeners and bypass the Runner's cross-lane Plan validation.
+The coordinator is only the transport fan-out. `NativeWebHost::start_replicated()`
+now packages the native Runner composition around it: it resolves one Plan,
+creates one deterministic replica slot per declared lane, builds each
+lane-local `NativePluginRegistry` from inventory, and starts
+`lenso_runner::ReplicatedNativeApp` with one `ExecutionAdapterCatalog` per
+lane. Use the ordinary `NativeWebHost::start()` for a single Kernel; never call
+it once per lane, because that would create independent listeners and bypass
+the Runner's cross-lane Plan validation.
+
+For a lane-local custom Adapter or hand-written Factory, extend the complete
+catalog supplied to `with_replicated_lane` rather than constructing a second
+Runner. The callback runs in the target lane, so it may safely create
+`!Send`/`!Sync` Plugin state there:
+
+```rust,no_run
+let app = NativeWebHost::new()
+    .plugin::<GreetingsHttp>()
+    .plugin_on_lane::<OrdersHttp>("orders")
+    .with_replicated_lane(|_lane, registry| {
+        let mut catalog = ExecutionAdapterCatalog::single(registry);
+        catalog = catalog
+            .with_adapter(MyLaneLocalAdapter)
+            .map_err(|error| error.to_string())?;
+        Ok(catalog)
+    })
+    .start_replicated()
+    .await?;
+```
+
+The default lane builder already supplies the native catalog, so this callback
+is only needed for additional lane-local implementations. The single-lane
+`.factory(...)` installer is intentionally rejected by `start_replicated`; add
+the hand-written factory inside this callback once per lane instead.
 
 `HttpEgressConfig` requires at least one exact `http` or `https` origin. The
 binding and immutable origin list are the caller's outbound authority. Egress
