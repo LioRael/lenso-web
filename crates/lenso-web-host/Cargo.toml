@@ -1,6 +1,6 @@
 [package]
 name = "lenso-web-host"
-version = "0.1.0"
+version = "0.2.0"
 description = "Linked native Host helper that starts Web Ingress and bound HTTP Endpoint Plugins."
 edition.workspace = true
 license.workspace = true
